@@ -1,0 +1,11 @@
+# Listen on all container interfaces: connectors reach it over the
+# oasm-connectors network. The port is never published on the host.
+SocksPort 0.0.0.0:9050
+# Only private (Docker network) clients may use the proxy.
+SocksPolicy accept 10.0.0.0/8
+SocksPolicy accept 172.16.0.0/12
+SocksPolicy accept 192.168.0.0/16
+SocksPolicy reject *
+
+DataDirectory /var/lib/tor
+Log notice stdout

@@ -230,6 +230,24 @@ services:
         max-file: '3'
     command: ['/data']
 
+  tor:
+    container_name: oasm-tor
+    image: oasm/oasm-tor:latest
+    build:
+      context: ./docker/tor
+    # SOCKS5 proxy for connectors: socks5://oasm-tor:9050 in a profile's
+    # custom args. Only on the connectors network, never published on the host.
+    networks:
+      - oasm-connectors
+    volumes:
+      - tor-data:/var/lib/tor
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
   migration:
     container_name: oasm-migration
     image: oasm/oasm-api:latest
@@ -262,6 +280,7 @@ volumes:
   rustfs-data:
   worker-tools-cache:
   worker-state:
+  tor-data:
 
 networks:
   oasm:
