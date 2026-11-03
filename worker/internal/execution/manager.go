@@ -293,13 +293,7 @@ func (m *Manager) Submit(ctx context.Context, spec JobSpec) (string, error) {
 	// the job, as numbers. Fall back to conservative defaults if a job carries
 	// none (should not happen for connector jobs).
 	cpuStr, memStr := limitsCPUandMemory(spec.Limits)
-	cpuRequestMillis, memRequestBytes := defaultCPURequestMillis, defaultMemRequestBytes
-	if v, err := resource.ParseCPU(cpuStr); err == nil && v > 0 {
-		cpuRequestMillis = v
-	}
-	if v, err := resource.ParseMemoryToBytes(memStr); err == nil && v > 0 {
-		memRequestBytes = v
-	}
+	cpuRequestMillis, memRequestBytes := resourceRequest(spec)
 
 	var h runtime.Handle
 	reserved := false
@@ -558,6 +552,40 @@ func (m *Manager) cancelTimeout(execID string) {
 	if err := m.Cancel(context.Background(), execID); err != nil {
 		m.logError("timeout cancel failed", err)
 	}
+}
+
+// resourceRequest is the CPU (millicores) and memory (bytes) a container of spec
+// is admitted with: its manifest limits, or conservative defaults when it
+// carries none (should not happen for connector jobs).
+func resourceRequest(spec JobSpec) (cpuMillis, memBytes int) {
+	cpuStr, memStr := limitsCPUandMemory(spec.Limits)
+	cpuMillis, memBytes = defaultCPURequestMillis, defaultMemRequestBytes
+	if v, err := resource.ParseCPU(cpuStr); err == nil && v > 0 {
+		cpuMillis = v
+	}
+	if v, err := resource.ParseMemoryToBytes(memStr); err == nil && v > 0 {
+		memBytes = v
+	}
+	return cpuMillis, memBytes
+}
+
+// CanStart reports whether spec could get a container right now (see
+// PoolManager.CanStart). Always true without a pool: nothing is capped.
+func (m *Manager) CanStart(spec JobSpec) bool {
+	if m.pool == nil {
+		return true
+	}
+	cpu, mem := resourceRequest(spec)
+	return m.pool.CanStart(poolKeyFor(spec), cpu, mem)
+}
+
+// SlotFreed signals (coalesced) that a pooled container slot was freed; nil
+// (never fires) without a pool.
+func (m *Manager) SlotFreed() <-chan struct{} {
+	if m.pool == nil {
+		return nil
+	}
+	return m.pool.Freed()
 }
 
 // FreedSlots reports how many busy container slots have been freed for spec's

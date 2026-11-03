@@ -19,7 +19,10 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { GrpcMethod } from '@nestjs/microservices';
+import { GrpcMethod, RpcException } from '@nestjs/microservices';
+import type { Metadata } from '@grpc/grpc-js';
+import { WORKER_TOKEN_HEADER } from '@/common/constants/app.constants';
+import { GrpcWorkerContext } from '@/common/guards/grpc-worker-context.service';
 import { plainToInstance } from 'class-transformer';
 import { EVENT_CATALOG } from '../event-bridge/contracts/event-catalog';
 import { PublishEvent } from '../event-bridge/publishing/publish-event.decorator';
@@ -114,6 +117,7 @@ export class JobsRegistryController {
     private readonly connectorRegistry: ConnectorRegistryService,
     private readonly toolConfigProfilesService: ToolConfigProfilesService,
     private readonly integrationsService: IntegrationsService,
+    private readonly grpcWorkerContext: GrpcWorkerContext,
   ) {}
 
   @WorkspaceAccess('job.read')
@@ -457,10 +461,12 @@ export class JobsRegistryController {
   async nextBatch(request: {
     id: string;
     limit: number;
+    excludeTools?: string[];
   }): Promise<{ values: Record<string, unknown>[] }> {
     const jobs = await this.jobsRegistryService.getNextJobs(
       request.id,
       Number(request.limit) || 1,
+      request.excludeTools ?? [],
     );
 
     const values = await Promise.all(
@@ -468,6 +474,30 @@ export class JobsRegistryController {
     );
 
     return { values };
+  }
+
+  /**
+   * Returns a claimed job the worker cannot start to the queue without
+   * consuming a retry. The worker is taken from its token, never the request,
+   * so a worker can only release jobs it holds.
+   */
+  @UseGuards(GrpcWorkerTokenGuard)
+  @GrpcMethod('JobsRegistryService', 'Release')
+  async release(
+    request: { jobId: string; reason?: string },
+    metadata: Metadata,
+  ): Promise<{ success: boolean }> {
+    const token = metadata.get(WORKER_TOKEN_HEADER)[0] as string | undefined;
+    const worker = token ? this.grpcWorkerContext.getWorker(token) : undefined;
+    if (!worker) {
+      throw new RpcException('Worker not found in context');
+    }
+    const success = await this.jobsRegistryService.releaseJob(
+      worker.id,
+      request.jobId,
+      request.reason ?? '',
+    );
+    return { success };
   }
 
   /**

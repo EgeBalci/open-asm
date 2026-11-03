@@ -767,6 +767,7 @@ export class JobsRegistryService {
   public async getNextJobs(
     workerId: string,
     limit: number,
+    excludeTools: string[] = [],
   ): Promise<GetNextJobResult[]> {
     // A worker controls how many slots it asks to fill, but never how much of
     // the queue one claim may drain.
@@ -853,6 +854,14 @@ export class JobsRegistryService {
         }
       } else {
         queryBuilder.andWhere('tool.id = :toolId', { toolId: worker.tool.id });
+      }
+
+      // Tools whose container pool is full on this worker: leave their jobs
+      // PENDING for other workers instead of claiming them to queue locally.
+      if (excludeTools.length > 0) {
+        queryBuilder.andWhere('tool.name NOT IN (:...excludeTools)', {
+          excludeTools,
+        });
       }
 
       if (worker.internalNetworkId) {
@@ -1152,6 +1161,37 @@ export class JobsRegistryService {
     );
 
     return { jobId: bullJob.id ?? '', queueId: bullJob.queueName };
+  }
+
+  /**
+   * Returns a job the worker claimed but could not start to the queue: PENDING
+   * and unassigned, without consuming a retry (it never ran). Conditional on
+   * the job still being IN_PROGRESS on THIS worker, so a cancelled job or one
+   * held by another worker is left alone. Returns whether it was released.
+   */
+  public async releaseJob(
+    workerId: string,
+    jobId: string,
+    reason: string,
+  ): Promise<boolean> {
+    const released = await this.repo.update(
+      { id: jobId, workerId, status: JobStatus.IN_PROGRESS },
+      {
+        status: JobStatus.PENDING,
+        workerId: () => 'NULL',
+        pickJobAt: () => 'NULL',
+      },
+    );
+    if (!released.affected) return false;
+
+    this.logger.log(`Job ${jobId} released by worker ${workerId}: ${reason}`);
+    // Wake idle workers of the workspace so the job does not wait a poll.
+    const job = await this.repo.findOne({
+      where: { id: jobId },
+      relations: { asset: { target: true } },
+    });
+    this.notifyJobsAvailable(job?.asset?.target?.workspaceId);
+    return true;
   }
 
   public async handleJobError(dto: UpdateResultDto, job: Job, error: Error) {

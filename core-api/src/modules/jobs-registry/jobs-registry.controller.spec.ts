@@ -1,3 +1,5 @@
+import { Metadata } from '@grpc/grpc-js';
+import { WORKER_TOKEN_HEADER } from '@/common/constants/app.constants';
 import { WorkspacePermissions } from '@/common/decorators/workspace-permissions.decorator';
 import { ToolCategory } from '@/common/enums/enum';
 import { GrpcWorkerContext } from '@/common/guards/grpc-worker-context.service';
@@ -412,6 +414,30 @@ describe('JobsRegistryController', () => {
       const [, passedDto] =
         mockJobsRegistryService.updateResultByCategory.mock.calls[0];
       expect(passedDto.payload[0].severity).toBe('info');
+    });
+  });
+  describe('release (gRPC)', () => {
+    const metadata = (token?: string): Metadata => {
+      const m = new Metadata();
+      if (token) m.set(WORKER_TOKEN_HEADER, token);
+      return m;
+    };
+
+    it('releases as the worker behind the token, never a caller-supplied id', async () => {
+      const service = { releaseJob: jest.fn().mockResolvedValue(true) };
+      const context = { getWorker: jest.fn().mockReturnValue({ id: 'worker-1' }) };
+      const controller = new JobsRegistryController(
+        service as any, {} as any, {} as any, {} as any, context as any,
+      );
+
+      await expect(
+        controller.release({ jobId: 'job-1', reason: 'no slot' }, metadata('tok')),
+      ).resolves.toEqual({ success: true });
+      expect(context.getWorker).toHaveBeenCalledWith('tok');
+      expect(service.releaseJob).toHaveBeenCalledWith('worker-1', 'job-1', 'no slot');
+
+      context.getWorker.mockReturnValue(undefined);
+      await expect(controller.release({ jobId: 'job-1' }, metadata())).rejects.toThrow();
     });
   });
 });

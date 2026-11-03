@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	connectorpb "oasm-worker/internal/gen/connector"
@@ -448,6 +449,60 @@ func submitCategoryResult(ctx context.Context, grpcClient *grpcclient.Client, jo
 }
 
 // submitCategoryError submits an error to the appropriate category-specific endpoint.
+// releaseSupported turns false once Core answers Release with Unimplemented,
+// so an older Core is not asked again for every surplus job.
+var releaseSupported atomic.Bool
+
+func init() { releaseSupported.Store(true) }
+
+// releaseSurplus hands a job claimed beyond this node's capacity straight back
+// to Core instead of queueing it here: one claim can carry more jobs of a tool
+// than there are container slots for it, and any other worker may be free to
+// run them now. Reports whether the job was released; if not (older Core, or
+// the release failed) the caller waits for a slot as before.
+func releaseSurplus(ctx context.Context, grpcClient *grpcclient.Client, events chan<- TuiEvent, jobID string, startTime time.Time, cause error) bool {
+	if !releaseSupported.Load() {
+		return false
+	}
+	reason := fmt.Sprintf("no free container slot on this worker (%v)", cause)
+	cleanupCtx, cleanupCancel := newDetachedCleanupContext()
+	defer cleanupCancel()
+	err := grpcClient.ReleaseJob(cleanupCtx, jobID, reason)
+	if errors.Is(err, grpcclient.ErrReleaseUnsupported) {
+		releaseSupported.Store(false)
+		return false
+	}
+	if err != nil {
+		NewTuiLogger(events, "Jobs").ErrorE(fmt.Sprintf("[%s] Failed to release surplus job; waiting for a slot", jobID), err)
+		return false
+	}
+	NewTuiLogger(events, "Jobs").Info("[%s] Released back to the queue: %s", jobID, reason)
+	Emit(events, TuiEvent{
+		Type:     EventJobCompleted,
+		JobID:    jobID,
+		Success:  false,
+		ErrorMsg: "released to the queue: " + reason,
+		Duration: time.Since(startTime),
+	})
+	return true
+}
+
+// releaseOrFail hands a job this worker claimed but could not start back to
+// Core's queue, so any worker can claim it and no retry is spent on a job that
+// never ran. A Core without the Release RPC, or a failed release, falls back to
+// the error report (Core's sweep retries that up to JOB_MAX_RETRIES times).
+func releaseOrFail(ctx context.Context, grpcClient *grpcclient.Client, events chan<- TuiEvent, jobID, category, errMsg string) {
+	err := grpcClient.ReleaseJob(ctx, jobID, errMsg)
+	if err == nil {
+		NewTuiLogger(events, "Jobs").Info("[%s] Released back to the queue: %s", jobID, errMsg)
+		return
+	}
+	if !errors.Is(err, grpcclient.ErrReleaseUnsupported) {
+		NewTuiLogger(events, "Jobs").ErrorE(fmt.Sprintf("[%s] Failed to release job", jobID), err)
+	}
+	submitCategoryError(ctx, grpcClient, events, jobID, category, errMsg)
+}
+
 func submitCategoryError(ctx context.Context, grpcClient *grpcclient.Client, events chan<- TuiEvent, jobID, category, errMsg string) {
 	if submitErr := submitCategoryResult(ctx, grpcClient, jobID, category, true, errMsg); submitErr != nil {
 		NewTuiLogger(events, "Jobs").ErrorE(fmt.Sprintf("[%s] Failed to submit error", jobID), submitErr)
@@ -590,6 +645,8 @@ func processConnectorJob(ctx context.Context, job *pb.Job, grpcClient *grpcclien
 		}
 	}
 
+	claimedConnectors.remember(spec)
+
 	// Per-image backoff gate: a prior job for this image failed to launch or
 	// the connector never completed it, so the image is cooling down. WAIT out
 	// the remaining window instead of reporting a job failure: reporting made
@@ -684,6 +741,9 @@ func processConnectorJob(ctx context.Context, job *pb.Job, grpcClient *grpcclien
 	var resultCh chan connector.ResultMsg
 	for attempt := 0; attempt < 2; attempt++ {
 		execID, err = mgr.Submit(ctx, spec)
+		if err != nil && errors.Is(err, execution.ErrPoolExhausted) && releaseSurplus(ctx, grpcClient, events, job.Id, startTime, err) {
+			return true, false // hadJob=true (job was pulled), caller releases semaphore
+		}
 		for err != nil && errors.Is(err, execution.ErrPoolExhausted) {
 			// A per-image cap drains only when this image frees a slot; the node
 			// budget drains when any image does.
@@ -693,9 +753,9 @@ func processConnectorJob(ctx context.Context, job *pb.Job, grpcClient *grpcclien
 				freed = nodeFreed
 			}
 			if poolWait.expired(time.Now(), freed) {
-				// Local scheduling gave up on this job: report it so Core can
-				// requeue it, and leave the image alone (a full pool is not an
-				// image defect).
+				// Local scheduling gave up on this job: hand it back to Core's
+				// queue (releaseOrFail), and leave the image alone (a full pool
+				// is not an image defect).
 				msg := fmt.Sprintf(
 					"Submit failed: no free container slot for %s: none freed in %s (%v)",
 					spec.Image,
@@ -716,7 +776,7 @@ func processConnectorJob(ctx context.Context, job *pb.Job, grpcClient *grpcclien
 				// on a cancelled ctx silently fails and leaves the job
 				// IN_PROGRESS in Core although the semaphore slot was released.
 				cleanupCtx, cleanupCancel := newDetachedCleanupContext()
-				submitCategoryError(cleanupCtx, grpcClient, events, job.Id, category, msg)
+				releaseOrFail(cleanupCtx, grpcClient, events, job.Id, category, msg)
 				cleanupCancel()
 				return true, false // hadJob=true (job was pulled), caller releases semaphore
 			}
@@ -743,7 +803,7 @@ func processConnectorJob(ctx context.Context, job *pb.Job, grpcClient *grpcclien
 				// on it can never reach Core and the job would stay
 				// IN_PROGRESS after the semaphore was released.
 				cleanupCtx, cleanupCancel := newDetachedCleanupContext()
-				submitCategoryError(cleanupCtx, grpcClient, events, job.Id, category, msg)
+				releaseOrFail(cleanupCtx, grpcClient, events, job.Id, category, msg)
 				cleanupCancel()
 				return true, false // hadJob=true (job was pulled), caller releases semaphore
 			case <-time.After(poolRetryDelay):

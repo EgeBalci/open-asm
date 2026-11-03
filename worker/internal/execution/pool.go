@@ -101,6 +101,9 @@ type PoolManager struct {
 	// tell a draining queue from a wedged one.
 	freedByKey map[string]uint64
 	freedTotal uint64
+	// freed gets a (coalesced) signal whenever a busy slot frees, so the job
+	// poller can claim work for it at once instead of waiting out its backoff.
+	freed chan struct{}
 	// now is injectable for deterministic Sweep tests; defaults to time.Now.
 	now func() time.Time
 }
@@ -125,6 +128,7 @@ func NewPoolManager(idleTimeout time.Duration, maxReplicasPerImage, maxJobsPerCo
 		owner:               map[string]string{},
 		pendingReplicas:     map[string]replicaRequest{},
 		freedByKey:          map[string]uint64{},
+		freed:               make(chan struct{}, 1),
 		now:                 time.Now,
 	}
 }
@@ -352,6 +356,28 @@ func (p *PoolManager) IsIdle(execID string) bool {
 func (p *PoolManager) markFreedLocked(key string) {
 	p.freedByKey[key]++
 	p.freedTotal++
+	select {
+	case p.freed <- struct{}{}:
+	default: // a signal is already pending
+	}
+}
+
+// Freed signals (coalesced) that a busy slot was freed.
+func (p *PoolManager) Freed() <-chan struct{} { return p.freed }
+
+// CanStart reports whether a job for poolKey could get a container right now:
+// an idle one to reuse, or room under the per-image cap and the node budget
+// for a new one. Reserves nothing — the answer can go stale at once.
+func (p *PoolManager) CanStart(poolKey string, cpuMillis, memBytes int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := normalizePoolKey(poolKey)
+	for _, cid := range p.idleByKey[key] {
+		if e, ok := p.byID[cid]; ok && e.State == PoolStateIdle {
+			return true
+		}
+	}
+	return p.admitLocked(key, cpuMillis, memBytes) == nil
 }
 
 // FreedSlots reports how many busy slots have been freed for poolKey and
@@ -445,6 +471,16 @@ func (p *PoolManager) reserveReplica(token, poolKey string, cpuMillis, memBytes 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	key := normalizePoolKey(poolKey)
+	if err := p.admitLocked(key, cpuMillis, memBytes); err != nil {
+		return err
+	}
+	p.pendingReplicas[token] = replicaRequest{poolKey: key, cpuMillis: cpuMillis, memBytes: memBytes}
+	return nil
+}
+
+// admitLocked checks the per-image replica cap and the node budget for one more
+// container of key (must hold mu).
+func (p *PoolManager) admitLocked(key string, cpuMillis, memBytes int) error {
 	if !isAgentPoolKey(key) && p.maxReplicasPerImage > 0 &&
 		p.busyCountLocked(key)+p.pendingCountLocked(key) >= p.maxReplicasPerImage {
 		return ErrPoolExhausted
@@ -457,7 +493,6 @@ func (p *PoolManager) reserveReplica(token, poolKey string, cpuMillis, memBytes 
 	if p.memBudgetBytes > 0 && busyMem+pendMem+memBytes > p.memBudgetBytes {
 		return ErrNodeBudgetExhausted
 	}
-	p.pendingReplicas[token] = replicaRequest{poolKey: key, cpuMillis: cpuMillis, memBytes: memBytes}
 	return nil
 }
 

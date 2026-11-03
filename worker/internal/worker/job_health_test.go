@@ -20,6 +20,8 @@ func resetWorkerGlobals() {
 	activeJobsMu.Lock()
 	activeJobs = make(map[string]struct{})
 	activeJobsMu.Unlock()
+	releaseSupported.Store(true)
+	claimedConnectors = newConnectorSpecs()
 }
 
 // swapImageBackoff replaces the package-level backoff for the duration of the

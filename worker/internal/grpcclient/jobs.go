@@ -2,10 +2,33 @@ package grpcclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	jobsRegistry "oasm-worker/internal/gen/jobs_registry"
 )
+
+// ErrReleaseUnsupported reports a Core that predates the Release RPC.
+var ErrReleaseUnsupported = errors.New("core does not support releasing jobs")
+
+// ReleaseJob hands a claimed job this worker cannot start back to Core's queue:
+// PENDING and unassigned, without consuming a retry, so any worker can claim it.
+func (c *Client) ReleaseJob(ctx context.Context, jobID, reason string) error {
+	resp, err := c.jobs.Release(ctx, &jobsRegistry.ReleaseJobRequest{JobId: jobID, Reason: reason})
+	if status.Code(err) == codes.Unimplemented {
+		return ErrReleaseUnsupported
+	}
+	if err != nil {
+		return fmt.Errorf("failed to release job %s: %w", jobID, err)
+	}
+	if !resp.GetSuccess() {
+		return fmt.Errorf("core did not release job %s: no longer held by this worker", jobID)
+	}
+	return nil
+}
 
 // NextJob pulls the next job from the registry.
 // Returns (nil, nil) when no job is available.
@@ -27,14 +50,18 @@ func (c *Client) NextJob(ctx context.Context) (*jobsRegistry.Job, error) {
 // times. Returns an empty slice (never nil-with-error) when nothing is
 // claimable, so callers can treat "empty" as "no work" exactly like NextJob
 // returns nil.
-func (c *Client) NextJobs(ctx context.Context, limit int) ([]*jobsRegistry.Job, error) {
+//
+// excludeTools names connector tools this worker cannot start right now; Core
+// leaves their jobs for other workers.
+func (c *Client) NextJobs(ctx context.Context, limit int, excludeTools []string) ([]*jobsRegistry.Job, error) {
 	if limit < 1 {
 		return nil, nil
 	}
 
 	resp, err := c.jobs.NextBatch(ctx, &jobsRegistry.NextBatchRequest{
-		Id:    c.WorkerID(),
-		Limit: int32(limit),
+		Id:           c.WorkerID(),
+		Limit:        int32(limit),
+		ExcludeTools: excludeTools,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch next jobs: %w", err)

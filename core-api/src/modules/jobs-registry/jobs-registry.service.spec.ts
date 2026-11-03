@@ -2673,6 +2673,21 @@ describe('JobsRegistryService', () => {
       );
     });
 
+    it('leaves the tools a worker cannot start unclaimed', async () => {
+      const { qb } = givenWorkerAndQueue(buildWorker(), []);
+
+      await service.getNextJobs('worker-uuid', 2, ['nuclei']);
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'tool.name NOT IN (:...excludeTools)',
+        { excludeTools: ['nuclei'] },
+      );
+
+      qb.andWhere.mockClear();
+      await service.getNextJobs('worker-uuid', 2);
+      const predicates = qb.andWhere.mock.calls.map((call) => String(call[0]));
+      expect(predicates.some((sql) => sql.includes('excludeTools'))).toBe(false);
+    });
+
     it('getNextJob delegates to the batched claim', async () => {
       // Given: one claimable job
       const { qb } = givenWorkerAndQueue(buildWorker(), [
@@ -2738,4 +2753,30 @@ describe('JobsRegistryService', () => {
     });
   });
 
+  describe('releaseJob', () => {
+    it('returns the job to PENDING, unassigned, without consuming a retry', async () => {
+      (mockJobRepository as any).update = jest.fn().mockResolvedValue({ affected: 1 });
+      (mockJobRepository as any).findOne = jest.fn().mockResolvedValue({
+        id: 'job-1',
+        asset: { target: { workspaceId: 'ws-1' } },
+      });
+
+      await expect(service.releaseJob('worker-1', 'job-1', 'no slot')).resolves.toBe(true);
+
+      const [where, patch] = (mockJobRepository as any).update.mock.calls[0];
+      expect(where).toEqual({ id: 'job-1', workerId: 'worker-1', status: JobStatus.IN_PROGRESS });
+      expect(patch.status).toBe(JobStatus.PENDING);
+      expect(patch.workerId()).toBe('NULL');
+      expect(patch).not.toHaveProperty('retryCount');
+      expect(mockWorkerStreamRegistry.publishJobsAvailable).toHaveBeenCalledWith('ws-1');
+    });
+
+    it('leaves a job it does not hold alone', async () => {
+      (mockJobRepository as any).update = jest.fn().mockResolvedValue({ affected: 0 });
+      mockWorkerStreamRegistry.publishJobsAvailable.mockClear();
+
+      await expect(service.releaseJob('worker-2', 'job-1', 'no slot')).resolves.toBe(false);
+      expect(mockWorkerStreamRegistry.publishJobsAvailable).not.toHaveBeenCalled();
+    });
+  });
 });
