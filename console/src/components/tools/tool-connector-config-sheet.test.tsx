@@ -6,6 +6,8 @@ import { ToolConnectorConfigSheet } from './tool-connector-config-sheet';
 import type { Tool } from '@/services/apis/gen/queries';
 
 const h = vi.hoisted(() => ({
+  createMutate: vi.fn(),
+  isOwner: true,
   // Faithful slice of core-api/resources/connectors/manifest.json nuclei configSchema.
   nucleiSchema: {
     type: 'object',
@@ -65,7 +67,7 @@ vi.mock('@/services/apis/gen/queries', async (importOriginal) => {
   return {
     ...actual,
     useToolConfigProfilesControllerCreate: () => ({
-      mutate: vi.fn(),
+      mutate: h.createMutate,
       isPending: false,
     }),
     useToolConfigProfilesControllerUpdate: () => ({
@@ -74,6 +76,10 @@ vi.mock('@/services/apis/gen/queries', async (importOriginal) => {
     }),
   };
 });
+
+vi.mock('@/hooks/usePermission', () => ({
+  usePermission: () => ({ isOwner: h.isOwner }),
+}));
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -199,5 +205,43 @@ describe('ToolConnectorConfigSheet dismiss', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('ToolConnectorConfigSheet custom parameters', () => {
+  const renderSheet = (supportsCustomArgs: boolean) =>
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ToolConnectorConfigSheet
+          open
+          onOpenChange={vi.fn()}
+          tool={{ id: 't1', name: 'nmap', supportsCustomArgs } as unknown as Tool}
+        />
+      </QueryClientProvider>,
+    );
+
+  it('sends the trimmed custom parameters with the profile config', async () => {
+    h.isOwner = true;
+    h.createMutate.mockClear();
+    const user = userEvent.setup();
+    renderSheet(true);
+
+    await user.type(screen.getByLabelText(/profile name/i), 'fast');
+    await user.type(screen.getByLabelText('Custom parameters'), "  -sV --script 'a b' ");
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(h.createMutate).toHaveBeenCalledTimes(1);
+    const { data } = h.createMutate.mock.calls[0][0];
+    expect(data.config.customArgs).toBe("-sV --script 'a b'");
+  });
+
+  it('is read-only for non-admins and hidden for unsupported tools', () => {
+    h.isOwner = false;
+    const { unmount } = renderSheet(true);
+    expect(screen.getByLabelText('Custom parameters')).toBeDisabled();
+    unmount();
+
+    renderSheet(false);
+    expect(screen.queryByLabelText('Custom parameters')).toBeNull();
   });
 });

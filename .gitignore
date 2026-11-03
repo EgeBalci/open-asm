@@ -99,3 +99,6 @@ asset-groups-lastrun.png
 api-test-out.txt
 tsc-out.txt
 console/tsc-out.txt
+
+# Sibling repo checked out for cross-repo work (oasm-platform/oasm-connectors)
+/oasm-connectors/

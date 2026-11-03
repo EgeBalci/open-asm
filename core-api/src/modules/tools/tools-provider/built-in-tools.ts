@@ -15,7 +15,7 @@ export const builtInTools: Tool[] = [
       'Subfinder is a subdomain discovery tool that returns valid subdomains for websites, using passive online sources.',
     logoUrl: '/static/images/subfinder.png',
     command:
-      '(echo {{value}} && subfinder -duc -d {{value}}) | dnsx -duc -a -aaaa -cname -mx -ns -soa -txt -resp',
+      '(echo {{value}} && subfinder -duc -d {{value}} {{args}}) | dnsx -duc -a -aaaa -cname -mx -ns -soa -txt -resp',
     parser: (result: string) => {
       const parsed = {};
       result.split('\n').forEach((line) => {
@@ -45,7 +45,7 @@ export const builtInTools: Tool[] = [
       'Httpx is a fast and multi-purpose HTTP toolkit that allows running multiple probes using the retryable http library. It is designed to maintain result reliability with an increased number of threads.',
     logoUrl: '/static/images/httpx.png',
     command:
-      'httpx -duc -u {{value}} -status-code -favicon -asn -title -web-server -irr -tech-detect -ip -cname -location -tls-grab -cdn -probe -json -follow-redirects -timeout 10 -threads 100 -silent',
+      'httpx -duc -u {{value}} -status-code -favicon -asn -title -web-server -irr -tech-detect -ip -cname -location -tls-grab -cdn -probe -json -follow-redirects -timeout 10 -threads 100 -silent {{args}}',
     parser: JSON.parse,
     version: '1.7.1',
     priority: JobPriority.MEDIUM,
@@ -66,7 +66,7 @@ export const builtInTools: Tool[] = [
     description:
       'A fast port scanner written in go with a focus on reliability and simplicity. Designed to be used in combination with other tools for attack surface discovery in bug bounties and pentests.',
     logoUrl: '/static/images/naabu.png',
-    command: 'naabu -host {{value}} -silent',
+    command: 'naabu -host {{value}} -silent {{args}}',
     parser: (result: string) => {
       const parsed = result
         .trim()

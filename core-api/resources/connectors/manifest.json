@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-17T02:05:53.665340812Z",
+  "generatedAt": "2026-11-03T09:22:04.620685519Z",
   "connectors": [
     {
       "name": "Acunetix",
@@ -159,6 +159,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -305,6 +306,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -433,6 +435,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -502,6 +505,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -785,6 +789,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -984,6 +989,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1223,6 +1229,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1339,6 +1346,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1451,6 +1459,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1563,6 +1572,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1833,6 +1843,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2003,6 +2014,7 @@
         }
       ],
       "agentTool": true,
+      "customArgs": true,
       "configSchema": {
         "additionalProperties": false,
         "properties": {
