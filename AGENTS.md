@@ -41,7 +41,7 @@ pnpm workspace (`pnpm-workspace.yaml`, `packageManager: pnpm@10.33.2`) with 2 No
 - `console/` — React 19 + Vite 8 + Tailwind v4. TanStack **Router** (file-based, `src/routes/` → generated `routeTree.gen.ts`) + TanStack Query, orval API client, shadcn/radix-ui/base-ui, recharts/echarts, xyflow, leaflet, Playwright e2e in `console/e2e/`.
 - `worker/` — Go 1.26 scanning worker (cobra + viper). Two entry points: `cmd/cli` (interactive TUI / headless) and `cmd/app` (env-driven, used by the Docker image). Talks to core-api over gRPC (`worker/internal/grpcclient/`, stubs in `worker/internal/gen/`), **spawns connector containers through the Docker Engine API** (`worker/internal/runtime/docker.go`), serves the connector callback gRPC on `:26276` (`worker/internal/connector/`), go-rod browser automation.
 
-Shared infra (see `docker-compose.yml`): PostgreSQL `pgvector/pgvector:pg17` (`:5432`), Redis (`:6379`), geo-ip proxy (`:4360`), RustFS S3 (`:9000`, admin UI `:9001`).
+Shared infra (see `docker-compose.yml`): PostgreSQL `pgvector/pgvector:pg18` (`:5432`), Redis (`:6379`), geo-ip (`oasm/dbip`, DB-IP Lite, `:4360`), RustFS S3 (`:9000`, admin UI `:9001`).
 
 ## Key Commands (via `task`, from the repo root)
 
@@ -150,7 +150,7 @@ Migration location: `core-api/src/database/migrations/` (58 files, newest last).
 | `console/.env` (from `example.env`) | `VITE_API_URL` (dev `http://localhost:6276`) |
 | `worker/.env` (from `.example.env`) | `WORKER_API_KEY`, `WORKER_MAX_CONCURRENCY`, `WORKER_GRPC_HOST/PORT`, plus `WORKER_MODE`, `WORKER_TOOL_PATH`, `WORKER_TOKEN_FILE`, `WORKER_CONNECTOR_ADDR`, `WORKER_CONNECTOR_ADDR_ALLOW_AUTODETECT`, `WORKER_NETWORK` |
 
-`ENCRYPTION_KEYS` semantics matter: the last key encrypts *and* decrypts, earlier keys are decrypt-only — reordering the list locks every encrypted column.
+`ENCRYPTION_KEYS` semantics matter: the last key encrypts *and* decrypts, earlier keys are decrypt-only, and the built-in default stays decrypt-only too. New ciphertext is AES-256-GCM tagged with its key id (`v2:<keyId>:…`, workspace data `v2:dek:…`), so keys can move; the older AES-CBC formats stay readable, and `EncryptionUpgradeService` re-wraps DEKs and rewrites older ciphertext with the active key at boot. Outside development/test the API refuses to boot unless the last key is random and 32+ characters (`assertEncryptionKeys` in `main.ts`).
 
 ## Architecture Patterns
 
@@ -202,7 +202,7 @@ Services: `console` (`:3000`), `core-api` (`:6276` + `:16276`, healthcheck `/api
 
 The compose service key is `oasm-worker`, **not** `worker`. It scales (`task docker-compose workers=3`): connector containers join the `oasm-connectors` network and dial each replica on its own IP, so nothing is published on the host. Replicas share `worker-state` but each locks its own token slot (`.worker-token`, `.worker-token.1`, …) — two workers resuming the same token would share an identity and reap each other's connectors.
 
-Volumes worth knowing: `pgdata`, `redis-data`, `geoip-data`, `rustfs-data`, `worker-tools-cache` (shared tool cache across workers), `worker-state` (worker join identity). `.open-api` is bind-mounted into `core-api` so the container regenerates the spec the console codegen consumes.
+Volumes worth knowing: `pgdata` (mounted at `/var/lib/postgresql` — pg18 layout), `redis-data`, `rustfs-data`, `worker-tools-cache` (shared tool cache across workers), `worker-state` (worker join identity). `.open-api` is bind-mounted into `core-api` so the container regenerates the spec the console codegen consumes.
 
 ## Common Gotchas
 
@@ -215,7 +215,7 @@ Volumes worth knowing: `pgdata`, `redis-data`, `geoip-data`, `rustfs-data`, `wor
 6. **Generated code is read-only**: `console/src/services/apis/gen/`, `console/src/routeTree.gen.ts`, `worker/internal/gen/`, `.open-api/*`, `core-api/resources/connectors/manifest.json`.
 7. **`.open-api/` is generated and gitignored.** core-api writes `open-api.json` on every boot and orval writes `open-api.patched.json` next to it; neither is committed, so boot the API before `task gen-api`. The better-auth spec merged into it is an input, not output: `core-api/resources/openapi/better-auth.json` (committed).
 8. **Lint autofixes.** `task api:lint` runs with `--fix`; re-read files after linting instead of assuming your version survived.
-9. **`ENCRYPTION_KEYS` is order-sensitive** — the last key is the only one that encrypts.
+9. **Only the last `ENCRYPTION_KEYS` entry encrypts.** Rotate by appending; drop an older key only after the boot log says no stored secret needs it. A new column holding secrets must be added to `SECRET_COLUMNS` in `encryption-upgrade.service.ts`, or rotation leaves it on the old key.
 10. **`task lint` is sequential by design** (two type-aware ESLint processes exhaust RAM). Never run `api:lint` and `console:lint` in parallel/background.
 11. **RustFS/S3 (`RUSTFS_*`) is not optional** — it backs storage, PDF reports, *and* the worker tool registry (`BuiltinToolRegistry` serves the tool archives). Compose only waits for `rustfs` to be *started*, not healthy, so a slow first boot can fail the first worker tool download.
 12. **The worker needs the Docker socket**; without the right group id the daemon returns "permission denied" and API-version negotiation silently falls back to 1.24.
