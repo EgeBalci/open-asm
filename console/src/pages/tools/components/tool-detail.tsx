@@ -168,6 +168,9 @@ export default function ToolDetail() {
 
   const tool = toolResponse;
   const isConnector = tool.type === ToolsControllerGetManyToolsType.connector;
+  // Built-ins have no schema; they get profiles only to carry custom args.
+  const hasProfiles =
+    (isConnector || Boolean(tool.supportsCustomArgs)) && isInstalled;
 
   // Data-driven tab list: a tab appears only when its content can be shown.
   const overviewVisible =
@@ -182,7 +185,7 @@ export default function ToolDetail() {
     {
       id: 'configuration',
       label: 'Configuration',
-      visible: isConnector && isInstalled,
+      visible: hasProfiles,
     },
     // Future tabs (Reviews, Pricing, Support, ...) get appended here with
     // their own visibility condition — they render nothing until data exists.
@@ -289,9 +292,7 @@ export default function ToolDetail() {
               {connectorMeta && <OverviewSection meta={connectorMeta} />}
             </TabsContent>
             <TabsContent value="configuration">
-              {isConnector && isInstalled && (
-                <ConfigProfilesSection tool={tool} />
-              )}
+              {hasProfiles && <ConfigProfilesSection tool={tool} />}
             </TabsContent>
           </Tabs>
         )}

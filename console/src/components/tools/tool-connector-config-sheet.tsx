@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import Image from '@/components/ui/image';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import LogoFrame from '@/components/ui/logo-frame';
 import {
   Sheet,
@@ -14,6 +15,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { usePermission } from '@/hooks/usePermission';
 import { useToolSchema } from '@/hooks/use-tool-schema';
 import type { Tool } from '@/services/apis/gen/queries';
 import {
@@ -81,6 +83,11 @@ export function ToolConnectorConfigSheet({
 
   const formRef = useRef<ToolConfigFormHandle>(null);
   const [profileName, setProfileName] = useState('');
+  const [customArgs, setCustomArgs] = useState('');
+  // Backend rejects customArgs changes from non-admins; mirror it in the UI.
+  const { isOwner } = usePermission();
+  const showCustomArgs =
+    !inline && mode !== 'inline' && Boolean(tool.supportsCustomArgs);
 
   // Fetch schema internally — no need for parent to pass it
   const { data: schemaData, isLoading: isSchemaLoading } = useToolSchema(
@@ -91,8 +98,10 @@ export function ToolConnectorConfigSheet({
   useEffect(() => {
     if (open) {
       setProfileName(initialData?.name ?? '');
+      const stored = initialData?.config?.customArgs;
+      setCustomArgs(typeof stored === 'string' ? stored : '');
     }
-  }, [open, initialData?.name]);
+  }, [open, initialData?.name, initialData?.config]);
 
   const { mutate: createProfile, isPending: isCreating } =
     useToolConfigProfilesControllerCreate({
@@ -136,7 +145,12 @@ export function ToolConnectorConfigSheet({
 
   const isPending = isCreating || isUpdating;
 
-  const handleSubmit = (config: Record<string, unknown>) => {
+  const handleSubmit = (formConfig: Record<string, unknown>) => {
+    // customArgs lives outside the schema form; set or clear it here.
+    const config = { ...formConfig };
+    delete config.customArgs;
+    if (showCustomArgs && customArgs.trim()) config.customArgs = customArgs.trim();
+
     // Inline mode (new): fire callback and close — no mutations
     if (mode === 'inline') {
       onInlineSubmit?.(config);
@@ -232,6 +246,28 @@ export function ToolConnectorConfigSheet({
             </div>
           )}
 
+          {showCustomArgs && (
+            <div className="space-y-2">
+              <Label htmlFor="custom-args">Custom parameters</Label>
+              <Textarea
+                id="custom-args"
+                placeholder="-rate 500 -timeout 10"
+                value={customArgs}
+                onChange={(e) => setCustomArgs(e.target.value)}
+                disabled={!isOwner}
+                maxLength={1024}
+                rows={2}
+                className="font-mono text-sm"
+                aria-describedby="custom-args-hint"
+              />
+              <p id="custom-args-hint" className="text-muted-foreground text-xs">
+                {isOwner
+                  ? 'Optional. Extra command-line arguments appended to the tool command; later flags override the defaults. Quote values that contain spaces.'
+                  : 'Only workspace admins can change custom parameters.'}
+              </p>
+            </div>
+          )}
+
           {schema ? (
             <ToolConfigForm
               ref={formRef}
@@ -249,7 +285,7 @@ export function ToolConnectorConfigSheet({
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Loading schema...
             </div>
-          ) : (
+          ) : showCustomArgs ? null : (
             <div className="rounded-md border border-dashed px-4 py-6 text-sm text-muted-foreground">
               This tool doesn't require configuration. You can still create a
               profile (empty config) to use as default.
