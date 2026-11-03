@@ -29,6 +29,7 @@ import { ToolConfigProfile } from './entities/tool-config-profiles.entity';
 import { WorkspaceTool } from './entities/workspace_tools.entity';
 import { ConnectorRegistryService } from '../connectors/connector-registry.service';
 import { DEFAULT_TOOL_TARGET_TYPES } from './tool-target-types';
+import { supportsCustomArgs } from './custom-args';
 
 /** WHERE fragment: the tool declares `category` among its categories. */
 const hasCategory = (category: ToolCategory) =>
@@ -148,6 +149,13 @@ export class ToolsService {
     return (
       tool.type === WorkerType.BUILT_IN ||
       this.connectorRegistry.getConnector(tool.name)?.agentTool === true
+    );
+  }
+
+  private supportsCustomArgs(tool: Pick<Tool, 'name'>): boolean {
+    return supportsCustomArgs(
+      tool.name,
+      this.connectorRegistry.getConnector(tool.name),
     );
   }
 
@@ -534,6 +542,7 @@ export class ToolsService {
         data: toolsWithProfiles.map((tool) => ({
           ...tool,
           agentTool: this.isAgentTool(tool),
+          supportsCustomArgs: this.supportsCustomArgs(tool),
         })),
         total,
       });
@@ -551,6 +560,7 @@ export class ToolsService {
       });
       for (const tool of data) {
         tool.agentTool = this.isAgentTool(tool);
+        tool.supportsCustomArgs = this.supportsCustomArgs(tool);
       }
       return getManyResponse({ query, data, total });
     }
@@ -653,8 +663,15 @@ export class ToolsService {
 
     const enrichedTools = combinedTools.map((tool) => {
       const agentTool = this.isAgentTool(tool);
+      const supportsCustomArgs = this.supportsCustomArgs(tool);
       if (tool.type === WorkerType.BUILT_IN) {
-        return { ...tool, isInstalled: true, isReady: true, agentTool };
+        return {
+          ...tool,
+          isInstalled: true,
+          isReady: true,
+          agentTool,
+          supportsCustomArgs,
+        };
       }
       const hasConfigProfile = workspaceId
         ? profileToolIds.has(tool.id!)
@@ -668,6 +685,7 @@ export class ToolsService {
         hasConfigProfile,
         isReady: needsConfig ? hasConfigProfile : true,
         agentTool,
+        supportsCustomArgs,
       };
     });
 
@@ -694,6 +712,7 @@ export class ToolsService {
     }
 
     tool.agentTool = this.isAgentTool(tool);
+    tool.supportsCustomArgs = this.supportsCustomArgs(tool);
 
     // If tool is built-in, it's always considered installed and ready
     if (tool.type === WorkerType.BUILT_IN) {

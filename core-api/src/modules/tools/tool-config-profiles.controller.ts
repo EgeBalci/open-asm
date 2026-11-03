@@ -1,6 +1,7 @@
 import { WorkspaceId } from '@/common/decorators/app.decorator';
 import { WorkspaceAccess } from '@/common/decorators/workspace-access.decorator';
 import { Doc } from '@/common/doc/doc.decorator';
+import type { RequestWithMetadata } from '@/common/interfaces/app.interface';
 import {
   Body,
   Controller,
@@ -9,7 +10,9 @@ import {
   Param,
   Patch,
   Post,
+  Req,
 } from '@nestjs/common';
+import type { NodeRequest } from '@nestjs/platform-node';
 import { ApiParam, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
 
@@ -17,6 +20,11 @@ import { CreateProfileDto } from './dto/create-profile.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ToolConfigProfile } from './entities/tool-config-profiles.entity';
 import { ToolConfigProfilesService } from './tool-config-profiles.service';
+
+/** Workspace admins hold the "*" permission (set by WorkspacePermissionGuard). */
+function isWorkspaceAdmin(req: NodeRequest): boolean {
+  return !!(req as RequestWithMetadata).permissions?.includes('*');
+}
 
 class ToolIdParamDto {
   @ApiProperty()
@@ -32,7 +40,7 @@ export class ToolConfigProfilesController {
   @Doc({
     summary: 'Create a config profile',
     description:
-      'Creates a new configuration profile for a tool in the workspace. Config is validated against the tool schema, secrets are encrypted at rest.',
+      'Creates a new configuration profile for a tool in the workspace. Config is validated against the tool schema, secrets are encrypted at rest. Setting the reserved `customArgs` string (extra command-line arguments) requires workspace admin.',
     response: { serialization: ToolConfigProfile },
     request: { getWorkspaceId: true },
   })
@@ -42,8 +50,14 @@ export class ToolConfigProfilesController {
     @Param() { toolId }: ToolIdParamDto,
     @Body() dto: CreateProfileDto,
     @WorkspaceId() workspaceId: string,
+    @Req() req: NodeRequest,
   ) {
-    return this.profilesService.create(workspaceId, toolId, dto);
+    return this.profilesService.create(
+      workspaceId,
+      toolId,
+      dto,
+      isWorkspaceAdmin(req),
+    );
   }
 
   @Doc({
@@ -84,7 +98,7 @@ export class ToolConfigProfilesController {
   @Doc({
     summary: 'Update a config profile',
     description:
-      'Updates an existing configuration profile. Config is re-validated against the tool schema, secrets are re-encrypted.',
+      'Updates an existing configuration profile. Config is re-validated against the tool schema, secrets are re-encrypted. Changing the reserved `customArgs` string requires workspace admin.',
     response: { serialization: ToolConfigProfile },
     request: { getWorkspaceId: true },
   })
@@ -97,8 +111,14 @@ export class ToolConfigProfilesController {
     @Param('id') id: string,
     @Body() dto: UpdateProfileDto,
     @WorkspaceId() workspaceId: string,
+    @Req() req: NodeRequest,
   ) {
-    return this.profilesService.update(workspaceId, id, dto);
+    return this.profilesService.update(
+      workspaceId,
+      id,
+      dto,
+      isWorkspaceAdmin(req),
+    );
   }
 
   @Doc({

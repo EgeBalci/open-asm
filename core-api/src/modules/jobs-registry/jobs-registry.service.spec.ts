@@ -2283,6 +2283,38 @@ describe('JobsRegistryService', () => {
       expect(result.map((job) => job.asset.id)).toEqual(selectedAssetIds);
     });
 
+    it('fills a built-in {{args}} slot with the profile customArgs, shell-quoted', async () => {
+      mockAssetQB.getMany.mockResolvedValue([
+        { id: 'a-1', value: 'one.example.com', isPrimary: true },
+      ]);
+      mockToolConfigProfilesService.resolveConfigForDispatch.mockResolvedValueOnce({
+        customArgs: `-p "80,443" -rate '$(id)'`,
+      });
+
+      const [job] = await service.createNewJob({
+        tool: portsScannerTool,
+        assetIds: ['a-1'],
+        workspaceId: 'ws-1',
+      });
+
+      expect(mockToolConfigProfilesService.resolveConfigForDispatch).toHaveBeenCalledWith(
+        'ws-1',
+        'tool-ports',
+        undefined,
+      );
+      expect(job.command).toBe(
+        `naabu -host one.example.com -silent '-p' '80,443' '-rate' '$(id)'`,
+      );
+
+      // No profile: the slot is emptied, never left as a literal {{args}}.
+      const [plain] = await service.createNewJob({
+        tool: portsScannerTool,
+        assetIds: ['a-1'],
+        workspaceId: 'ws-1',
+      });
+      expect(plain.command).toBe('naabu -host one.example.com -silent ');
+    });
+
     describe('category selection', () => {
       const nmap = {
         id: 'tool-nmap',

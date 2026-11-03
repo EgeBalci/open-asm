@@ -16,6 +16,11 @@ import {
   WorkerType,
 } from '@/common/enums/enum';
 import bindingCommand from '@/utils/bindingCommand';
+import {
+  CUSTOM_ARGS_KEY,
+  parseCustomArgs,
+  shellQuoteArgs,
+} from '../tools/custom-args';
 import { getManyResponse } from '@/utils/getManyResponse';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
@@ -359,6 +364,24 @@ export class JobsRegistryService {
       }
     }
 
+    // Built-ins: the profile's (explicit or default) customArgs fill the
+    // command's {{args}} slot, each token single-quoted for the worker's sh -c.
+    const defaultCommand =
+      builtInTools.find((t) => t.name === tool.name)?.command ?? '';
+    let builtInArgs = '';
+    if (!isConnector && defaultCommand.includes('{{args}}')) {
+      const profileConfig =
+        await this.toolConfigProfilesService.resolveConfigForDispatch(
+          workspaceId,
+          tool.id!,
+          configProfileId,
+        );
+      const raw = profileConfig?.[CUSTOM_ARGS_KEY];
+      if (typeof raw === 'string') {
+        builtInArgs = shellQuoteArgs(parseCustomArgs(raw));
+      }
+    }
+
     if (
       priority &&
       (priority < JobPriority.CRITICAL || priority > JobPriority.BACKGROUND)
@@ -429,9 +452,6 @@ export class JobsRegistryService {
           : services;
 
       // Step 3: iterate tools and create jobs
-      const defaultCommand = builtInTools.find(
-        (t) => t.name === tool.name,
-      )?.command;
 
       // Create jobs for each asset service
       for (const assetService of assetServices) {
@@ -447,10 +467,11 @@ export class JobsRegistryService {
           jobHistory,
           command: isConnector
             ? undefined
-            : bindingCommand(defaultCommand ?? '', {
+            : bindingCommand(defaultCommand, {
                 // Use the default command template for HTTP_PROBE
                 value: assetService.value,
                 port: assetService.port.toString(),
+                args: builtInArgs,
               }),
           configProfileId: isConnector ? configProfileId : undefined,
           config: isConnector ? mergedConfig ?? config ?? null : null,
@@ -472,9 +493,6 @@ export class JobsRegistryService {
       const filteredAssets = this.filterAssetsByCategory(assets, jobCategory);
 
       // Step 3: iterate tools and create jobs
-      const defaultCommand = builtInTools.find(
-        (t) => t.name === tool.name,
-      )?.command;
 
       for (const asset of filteredAssets) {
         const job = jobRepo.create({
@@ -488,8 +506,9 @@ export class JobsRegistryService {
           jobHistory,
           command: isConnector
             ? undefined
-            : bindingCommand(defaultCommand ?? '', {
+            : bindingCommand(defaultCommand, {
                 value: asset.value,
+                args: builtInArgs,
               }),
           configProfileId: isConnector ? configProfileId : undefined,
           config: isConnector ? mergedConfig ?? config ?? null : null,

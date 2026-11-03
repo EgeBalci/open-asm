@@ -19,6 +19,8 @@ export interface ConnectorManifestEntry {
   capabilities: ManifestCapability[];
   /** When true the AI agent exposes this connector as its own callable tool. */
   agentTool?: boolean;
+  /** When true the adapter appends the profile's admin-set `customArgs`. */
+  customArgs?: boolean;
   configSchema?: Record<string, unknown>;
   [key: string]: unknown;
 }

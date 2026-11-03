@@ -8,7 +8,7 @@ export class CreateProfileDto {
   @MaxLength(128)
   name: string;
 
-  @ApiProperty({ description: 'Tool-specific configuration object', example: { severity: ['high'] } })
+  @ApiProperty({ description: 'Tool-specific configuration object. The reserved `customArgs` string holds extra command-line arguments for tools that support them (workspace admin only).', example: { severity: ['high'] } })
   @IsObject()
   config: Record<string, unknown>;
 }

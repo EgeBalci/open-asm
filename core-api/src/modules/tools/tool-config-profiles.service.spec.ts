@@ -2,6 +2,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 
@@ -795,5 +796,92 @@ describe('ToolConfigProfilesService', () => {
     const result = await service.list(wsId, toolId);
     const cfg = result[0].config;
     expect(cfg.apiKey).toBe('****3456');
+  });
+
+  // ── customArgs ───────────────────────────────────────────────────────
+
+  describe('customArgs', () => {
+    const nmapEntry = {
+      name: 'nmap', slug: 'nmap', configSchema: nucleiSchema, customArgs: true,
+    };
+    const builtIn = { id: toolId, name: 'naabu', type: 'built_in' } as Tool;
+
+    beforeEach(() => {
+      profilesRepo.findOne.mockResolvedValue(null);
+      profilesRepo.save.mockImplementation((p) => p);
+      profilesRepo.create.mockImplementation((p) => p);
+    });
+
+    it('rejects a non-admin setting customArgs', async () => {
+      (connectorRegistry.getConnector as jest.Mock).mockReturnValue(nmapEntry);
+      toolsRepo.findOne.mockResolvedValue(mockTool);
+      await expect(
+        service.create(wsId, toolId, { name: 'p', config: { customArgs: '-sV' } }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('admin: validates the rest against the strict schema and stores the args', async () => {
+      (connectorRegistry.getConnector as jest.Mock).mockReturnValue(nmapEntry);
+      toolsRepo.findOne.mockResolvedValue(mockTool);
+      const saved = await service.create(
+        wsId,
+        toolId,
+        { name: 'p', config: { rateLimit: 5, customArgs: `--script 'a b'` } },
+        true,
+      );
+      expect(saved.config).toEqual({ rateLimit: 5, customArgs: `--script 'a b'` });
+    });
+
+    it.each([
+      ['unsupported connector', { ...nmapEntry, customArgs: undefined }, '-sV'],
+      ['unbalanced quote', nmapEntry, `--script 'a`],
+      ['too long', nmapEntry, 'x'.repeat(1025)],
+    ])('admin: rejects %s', async (_label, entry, args) => {
+      (connectorRegistry.getConnector as jest.Mock).mockReturnValue(entry);
+      toolsRepo.findOne.mockResolvedValue(mockTool);
+      await expect(
+        service.create(wsId, toolId, { name: 'p', config: { customArgs: args } }, true),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('allows built-in profiles that only carry customArgs', async () => {
+      (connectorRegistry.getConnector as jest.Mock).mockReturnValue(null);
+      toolsRepo.findOne.mockResolvedValue(builtIn);
+      await expect(
+        service.create(wsId, toolId, { name: 'p', config: { customArgs: '-p 80' } }, true),
+      ).resolves.toBeDefined();
+      await expect(
+        service.create(wsId, toolId, { name: 'q', config: { other: 1 } }, true),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('non-admin may update other fields while customArgs stays unchanged', async () => {
+      (connectorRegistry.getConnector as jest.Mock).mockReturnValue(nmapEntry);
+      toolsRepo.findOne.mockResolvedValue(mockTool);
+      profilesRepo.findOne.mockResolvedValue(
+        mockProfile({ config: { rateLimit: 1, customArgs: '-sV' } }),
+      );
+      await expect(
+        service.update(wsId, 'prof-001', { config: { rateLimit: 2, customArgs: '-sV' } }),
+      ).resolves.toBeDefined();
+      await expect(
+        service.update(wsId, 'prof-001', { config: { rateLimit: 2, customArgs: '-A' } }),
+      ).rejects.toThrow(ForbiddenException);
+      await expect(
+        service.update(wsId, 'prof-001', { config: { rateLimit: 2 } }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('resolveConfigForJob drops inline customArgs and tokenizes the profile ones', async () => {
+      (connectorRegistry.getConnector as jest.Mock).mockReturnValue(nmapEntry);
+      toolsRepo.findOne.mockResolvedValue(mockTool);
+      profilesRepo.findOne.mockResolvedValue(
+        mockProfile({ config: { customArgs: `-sV --script "a b"` } }),
+      );
+      const merged = await service.resolveConfigForJob(wsId, toolId, {
+        config: { rateLimit: 3, customArgs: '--evil' },
+      });
+      expect(merged).toEqual({ rateLimit: 3, customArgs: ['-sV', '--script', 'a b'] });
+    });
   });
 });

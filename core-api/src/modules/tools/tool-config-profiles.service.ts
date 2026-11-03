@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -8,10 +9,20 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 
-import { ConnectorRegistryService } from '@/modules/connectors/connector-registry.service';
+import { WorkerType } from '@/common/enums/enum';
+import {
+  ConnectorRegistryService,
+  type ConnectorManifestEntry,
+} from '@/modules/connectors/connector-registry.service';
 import { WorkspaceEncryptionService } from '@/services/workspace-encryption/workspace-encryption.service';
 import { ToolConfigProfile } from './entities/tool-config-profiles.entity';
 import { Tool } from './entities/tools.entity';
+import {
+  CUSTOM_ARGS_KEY,
+  CUSTOM_ARGS_MAX_LENGTH,
+  parseCustomArgs,
+  supportsCustomArgs,
+} from './custom-args';
 import {
   decryptProfile,
   deepMerge,
@@ -50,6 +61,10 @@ export class ToolConfigProfilesService {
       throw new BadRequestException(`Tool ${toolId} not found`);
     }
     const entry = this.connectorRegistry.getConnector(tool.name);
+    // Built-ins have no schema; their profiles only carry customArgs.
+    if (!entry && tool.type === WorkerType.BUILT_IN) {
+      return { tool, entry: null, schema: null, sensitiveFields: [] };
+    }
     if (!entry) {
       throw new BadRequestException(
         `Unknown tool "${tool.name}" -- cannot validate config`,
@@ -61,12 +76,14 @@ export class ToolConfigProfilesService {
     if (!schema) {
       return {
         tool,
+        entry,
         schema: null,
         sensitiveFields: [],
       };
     }
     return {
       tool,
+      entry,
       schema,
       sensitiveFields: getSensitiveFields(schema),
     };
@@ -112,15 +129,70 @@ export class ToolConfigProfilesService {
     return copy;
   }
 
+  /**
+   * Checks the reserved `customArgs` key and returns the config without it for
+   * schema validation (connector schemas forbid unknown keys). The args reach
+   * the tool's command line, so only workspace admins may change them.
+   */
+  private withoutCustomArgs(
+    tool: Tool,
+    entry: ConnectorManifestEntry | null,
+    config: Record<string, unknown>,
+    previous: unknown,
+    isAdmin: boolean,
+  ): Record<string, unknown> {
+    const rest = { ...config };
+    const args = rest[CUSTOM_ARGS_KEY];
+    delete rest[CUSTOM_ARGS_KEY];
+    if ((args ?? '') !== (previous ?? '') && !isAdmin) {
+      throw new ForbiddenException(
+        'Only workspace admins can change custom arguments',
+      );
+    }
+    if (args !== undefined && args !== '') {
+      if (typeof args !== 'string' || args.length > CUSTOM_ARGS_MAX_LENGTH) {
+        throw new BadRequestException(
+          `customArgs must be a string of at most ${CUSTOM_ARGS_MAX_LENGTH} characters`,
+        );
+      }
+      if (!supportsCustomArgs(tool.name, entry)) {
+        throw new BadRequestException(
+          `Tool "${tool.name}" does not support custom arguments`,
+        );
+      }
+      try {
+        parseCustomArgs(args);
+      } catch (error) {
+        throw new BadRequestException(
+          `Invalid customArgs: ${(error as Error).message}`,
+        );
+      }
+    }
+    if (!entry && Object.keys(rest).length > 0) {
+      throw new BadRequestException(
+        `Built-in tool "${tool.name}" only accepts customArgs`,
+      );
+    }
+    return rest;
+  }
+
   // ── CRUD ─────────────────────────────────────────────────────────────
 
   async create(
     workspaceId: string,
     toolId: string,
     dto: { name: string; config: Record<string, unknown> },
+    isAdmin = false,
   ): Promise<ToolConfigProfile> {
-    const { tool, schema, sensitiveFields } =
+    const { tool, entry, schema, sensitiveFields } =
       await this.resolveConnectorSchema(toolId);
+    const toolConfig = this.withoutCustomArgs(
+      tool,
+      entry,
+      dto.config,
+      undefined,
+      isAdmin,
+    );
 
     // Validate config against schema (I3) — skipped for connectors without a
     // config schema (their config is stored as-is, no validation possible).
@@ -128,7 +200,7 @@ export class ToolConfigProfilesService {
       validateProfileOrThrow(
         this.connectorRegistry,
         tool.name,
-        dto.config,
+        toolConfig,
       );
     }
 
@@ -192,12 +264,13 @@ export class ToolConfigProfilesService {
       name?: string;
       config?: Record<string, unknown>;
     },
+    isAdmin = false,
   ): Promise<ToolConfigProfile> {
     const profile = await this.findOwned(workspaceId, profileId);
 
     // Resolve schema via tool's slug
     const toolId = (profile.tool as unknown as { id: string }).id;
-    const { tool, schema, sensitiveFields } =
+    const { tool, entry, schema, sensitiveFields } =
       await this.resolveConnectorSchema(toolId);
 
     // If name is changing, check uniqueness (I1)
@@ -219,8 +292,15 @@ export class ToolConfigProfilesService {
 
     // Validate updated config (I3) — skipped for no-schema connectors
     if (dto.config !== undefined) {
+      const toolConfig = this.withoutCustomArgs(
+        tool,
+        entry,
+        dto.config,
+        profile.config?.[CUSTOM_ARGS_KEY],
+        isAdmin,
+      );
       if (schema) {
-        validateProfileOrThrow(this.connectorRegistry, tool.name, dto.config);
+        validateProfileOrThrow(this.connectorRegistry, tool.name, toolConfig);
       }
     }
 
@@ -459,25 +539,29 @@ export class ToolConfigProfilesService {
         ref.configProfileId,
       )) ?? {};
 
-    if (!ref.config || Object.keys(ref.config).length === 0) {
-      return Object.keys(base).length > 0 ? base : undefined;
+    // customArgs comes only from the admin-gated profile, never inline config.
+    const inline = { ...ref.config };
+    delete inline[CUSTOM_ARGS_KEY];
+
+    if (Object.keys(inline).length === 0) {
+      return Object.keys(base).length > 0 ? tokenizeCustomArgs(base) : undefined;
     }
 
     // Decrypt inline config sensitive fields
     const tool = await this.toolsRepo.findOne({ where: { id: toolId } });
-    if (!tool) return ref.config;
+    if (!tool) return inline;
 
     const entry = this.connectorRegistry.getConnector(tool.name);
     const schema = entry?.configSchema;
     const sensitiveFields = getSensitiveFields(schema);
 
-    let inlineConfig = ref.config;
+    let inlineConfig = inline;
     if (sensitiveFields.length > 0) {
       const dek = await this.encryptionService.getDEK(workspaceId);
-      inlineConfig = decryptProfile(ref.config, sensitiveFields, dek);
+      inlineConfig = decryptProfile(inline, sensitiveFields, dek);
     }
 
-    return deepMerge(base, inlineConfig);
+    return tokenizeCustomArgs(deepMerge(base, inlineConfig));
   }
 
   // ── Internals ────────────────────────────────────────────────────────
@@ -499,4 +583,13 @@ export class ToolConfigProfilesService {
     }
     return profile;
   }
+}
+
+/** Connectors receive customArgs pre-split into argv tokens (sdk connector.CustomArgs). */
+function tokenizeCustomArgs(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const args = config[CUSTOM_ARGS_KEY];
+  if (typeof args !== 'string') return config;
+  return { ...config, [CUSTOM_ARGS_KEY]: parseCustomArgs(args) };
 }

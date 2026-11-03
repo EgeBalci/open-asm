@@ -154,4 +154,8 @@ export class Tool {
   /** From the connector manifest: the AI agent exposes this tool as a callable tool. */
   @ApiProperty({ required: false })
   agentTool?: boolean;
+
+  /** Config profiles of this tool accept extra command-line args (`customArgs`). */
+  @ApiProperty({ required: false })
+  supportsCustomArgs?: boolean;
 }
