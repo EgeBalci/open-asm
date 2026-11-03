@@ -1566,6 +1566,7 @@ export type Tool = {
   hasConfigProfile?: ToolHasConfigProfile;
   isReady?: boolean;
   agentTool?: boolean;
+  supportsCustomArgs?: boolean;
 };
 
 export type User = {
@@ -2617,14 +2618,14 @@ export type ToolConfigProfile = {
 };
 
 /**
- * Tool-specific configuration object
+ * Tool-specific configuration object. The reserved `customArgs` string holds extra command-line arguments for tools that support them (workspace admin only).
  */
 export type CreateProfileDtoConfig = { [key: string]: unknown };
 
 export type CreateProfileDto = {
   /** Profile name (unique per tool) */
   name: string;
-  /** Tool-specific configuration object */
+  /** Tool-specific configuration object. The reserved `customArgs` string holds extra command-line arguments for tools that support them (workspace admin only). */
   config: CreateProfileDtoConfig;
 };
 
@@ -29091,7 +29092,7 @@ export function useToolsControllerGetToolSchema<
 }
 
 /**
- * Creates a new configuration profile for a tool in the workspace. Config is validated against the tool schema, secrets are encrypted at rest.
+ * Creates a new configuration profile for a tool in the workspace. Config is validated against the tool schema, secrets are encrypted at rest. Setting the reserved `customArgs` string (extra command-line arguments) requires workspace admin.
  * @summary Create a config profile
  */
 export const toolConfigProfilesControllerCreate = (
@@ -29548,7 +29549,7 @@ export function useToolConfigProfilesControllerGetOne<
 }
 
 /**
- * Updates an existing configuration profile. Config is re-validated against the tool schema, secrets are re-encrypted.
+ * Updates an existing configuration profile. Config is re-validated against the tool schema, secrets are re-encrypted. Changing the reserved `customArgs` string requires workspace admin.
  * @summary Update a config profile
  */
 export const toolConfigProfilesControllerUpdate = (
