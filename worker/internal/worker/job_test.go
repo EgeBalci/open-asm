@@ -86,6 +86,20 @@ type testJobsServer struct {
 	mu      sync.Mutex
 	nextFn  func() (*pb.Job, error)
 	results []capturedResult
+	// released records Release calls; releaseOK=false keeps Release
+	// unimplemented, like a Core that predates it.
+	releaseOK bool
+	released  []string
+}
+
+func (s *testJobsServer) Release(ctx context.Context, req *pb.ReleaseJobRequest) (*pb.JobResponse, error) {
+	if !s.releaseOK {
+		return s.UnimplementedJobsRegistryServiceServer.Release(ctx, req)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.released = append(s.released, req.GetJobId())
+	return &pb.JobResponse{Success: true}, nil
 }
 
 type capturedResult struct {

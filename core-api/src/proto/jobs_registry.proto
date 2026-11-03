@@ -17,6 +17,11 @@ service JobsRegistryService {
   // before this RPC keep working.
   rpc NextBatch (NextBatchRequest) returns (JobList);
 
+  // Hands a job this worker claimed but cannot start (no container slot) back
+  // to the queue: PENDING, unassigned, no retry consumed, so any worker can
+  // claim it again. Only the worker holding the job (by token) can release it.
+  rpc Release (ReleaseJobRequest) returns (JobResponse);
+
   // DEPRECATED: Use category-specific RPCs
   rpc Result (JobResultRequest) returns (JobResponse);
   
@@ -67,6 +72,11 @@ message NextBatchRequest {
 // exactly like a `Next` response with an empty id.
 message JobList {
   repeated Job values = 1;
+}
+
+message ReleaseJobRequest {
+  string job_id = 1;
+  string reason = 2; // logged only
 }
 
 message JobResponse {

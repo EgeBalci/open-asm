@@ -2,10 +2,33 @@ package grpcclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	jobsRegistry "oasm-worker/internal/gen/jobs_registry"
 )
+
+// ErrReleaseUnsupported reports a Core that predates the Release RPC.
+var ErrReleaseUnsupported = errors.New("core does not support releasing jobs")
+
+// ReleaseJob hands a claimed job this worker cannot start back to Core's queue:
+// PENDING and unassigned, without consuming a retry, so any worker can claim it.
+func (c *Client) ReleaseJob(ctx context.Context, jobID, reason string) error {
+	resp, err := c.jobs.Release(ctx, &jobsRegistry.ReleaseJobRequest{JobId: jobID, Reason: reason})
+	if status.Code(err) == codes.Unimplemented {
+		return ErrReleaseUnsupported
+	}
+	if err != nil {
+		return fmt.Errorf("failed to release job %s: %w", jobID, err)
+	}
+	if !resp.GetSuccess() {
+		return fmt.Errorf("core did not release job %s: no longer held by this worker", jobID)
+	}
+	return nil
+}
 
 // NextJob pulls the next job from the registry.
 // Returns (nil, nil) when no job is available.

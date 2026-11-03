@@ -1067,6 +1067,37 @@ export class JobsRegistryService {
     return { jobId: bullJob.id ?? '', queueId: bullJob.queueName };
   }
 
+  /**
+   * Returns a job the worker claimed but could not start to the queue: PENDING
+   * and unassigned, without consuming a retry (it never ran). Conditional on
+   * the job still being IN_PROGRESS on THIS worker, so a cancelled job or one
+   * held by another worker is left alone. Returns whether it was released.
+   */
+  public async releaseJob(
+    workerId: string,
+    jobId: string,
+    reason: string,
+  ): Promise<boolean> {
+    const released = await this.repo.update(
+      { id: jobId, workerId, status: JobStatus.IN_PROGRESS },
+      {
+        status: JobStatus.PENDING,
+        workerId: () => 'NULL',
+        pickJobAt: () => 'NULL',
+      },
+    );
+    if (!released.affected) return false;
+
+    this.logger.log(`Job ${jobId} released by worker ${workerId}: ${reason}`);
+    // Wake idle workers of the workspace so the job does not wait a poll.
+    const job = await this.repo.findOne({
+      where: { id: jobId },
+      relations: { asset: { target: true } },
+    });
+    this.notifyJobsAvailable(job?.asset?.target?.workspaceId);
+    return true;
+  }
+
   public async handleJobError(dto: UpdateResultDto, job: Job, error: Error) {
     // Conditional write, mirroring the success path: a job that was cancelled
     // (or re-run) while this failure was in flight must KEEP that outcome. A
