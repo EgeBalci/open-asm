@@ -83,8 +83,9 @@ func newDetachedCleanupContext() (context.Context, context.CancelFunc) {
 // health. A var (not const) so tests can shrink it.
 var healthPollInterval = 5 * time.Second
 
-// poolWaitBudget is how long a job queued on a full container pool may wait
-// without the pool freeing a single slot before it is reported back to Core.
+// poolWaitBudget is the minimum time a job queued on a full container pool may
+// wait without the pool freeing a single slot before it is reported back to
+// Core; poolWaitBudgetFor raises it for connectors with a longer timeout.
 const poolWaitBudget = 10 * time.Minute
 
 // poolWaitDeadline bounds a job's wait for a container slot by pool progress,
@@ -96,6 +97,18 @@ type poolWaitDeadline struct {
 	budget time.Duration
 	until  time.Time
 	freed  uint64
+}
+
+// poolWaitBudgetFor is the pool-wait budget of one job. A slot held by a scan of
+// the same image frees only after that scan's own timeout plus container start
+// and teardown, so the budget must outlast all three: with the bare 10m budget
+// every job queued behind a full-length nuclei scan (timeout 600s) expired just
+// before the slot freed.
+// shortcut: a node-budget wait blocked by a longer-running image of another
+// kind still gets this image's budget; track per-container deadlines if needed.
+func poolWaitBudgetFor(limits map[string]any) time.Duration {
+	return max(poolWaitBudget, execution.JobTimeout(limits)+
+		execution.ConnectorConnectTimeout+execution.ConnectorCleanupTimeout)
 }
 
 func newPoolWaitDeadline(now time.Time, budget time.Duration) *poolWaitDeadline {
@@ -641,7 +654,8 @@ func processConnectorJob(ctx context.Context, job *pb.Job, grpcClient *grpcclien
 	// attempt would double the real bound (attempt 0 could burn the whole
 	// budget, then attempt 1 would start a fresh one). It restarts only when the
 	// pool frees a slot (see poolWaitDeadline).
-	poolWait := newPoolWaitDeadline(time.Now(), poolWaitBudget)
+	waitBudget := poolWaitBudgetFor(spec.Limits)
+	poolWait := newPoolWaitDeadline(time.Now(), waitBudget)
 
 	// The ExecuteJob payload is identical across retries, so build it once.
 	inputs := make(map[string]string, len(spec.Inputs))
@@ -685,7 +699,7 @@ func processConnectorJob(ctx context.Context, job *pb.Job, grpcClient *grpcclien
 				msg := fmt.Sprintf(
 					"Submit failed: no free container slot for %s: none freed in %s (%v)",
 					spec.Image,
-					poolWaitBudget,
+					waitBudget,
 					err,
 				)
 				log.ErrorE(fmt.Sprintf("[%s] %s", job.Id, msg), err)
