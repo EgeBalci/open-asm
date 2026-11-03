@@ -827,6 +827,11 @@ func (m *Manager) Logs(ctx context.Context, id string) (<-chan []byte, error) {
 	return m.rt.Logs(ctx, e.Handle)
 }
 
+// JobTimeout is the connector's own run timeout from its Limits (0 = none).
+func JobTimeout(limits map[string]any) time.Duration {
+	return time.Duration(timeoutSeconds(limits)) * time.Second
+}
+
 func timeoutSeconds(limits map[string]any) int {
 	if limits == nil {
 		return 0

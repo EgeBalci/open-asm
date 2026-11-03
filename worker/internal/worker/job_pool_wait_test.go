@@ -129,3 +129,28 @@ func TestPoolWaitDeadlineRestartsOnFreedSlot(t *testing.T) {
 		t.Fatal("no slot freed for the whole budget: must expire")
 	}
 }
+
+// TestPoolWaitBudgetOutlastsAFullLengthScan: a job queued behind a scan of the
+// same image waits from that scan's claim, but the slot frees only after the
+// scan's container start + its own timeout + teardown. The budget must cover
+// that, or the queued job fails right before the slot frees.
+func TestPoolWaitBudgetOutlastsAFullLengthScan(t *testing.T) {
+	nuclei := map[string]any{execution.JobTimeoutSecondsKey: float64(600)}
+	got := poolWaitBudgetFor(nuclei)
+	slotFreesAt := execution.ConnectorConnectTimeout + 600*time.Second + execution.ConnectorCleanupTimeout
+	if got < slotFreesAt {
+		t.Fatalf("budget %s ends before a full-length scan frees its slot at %s", got, slotFreesAt)
+	}
+
+	start := time.Unix(1_000, 0)
+	d := newPoolWaitDeadline(start, got)
+	if d.expired(start.Add(slotFreesAt-time.Second), 0) {
+		t.Fatal("queued job expired while the scan ahead of it was still within its timeout")
+	}
+
+	for _, limits := range []map[string]any{nil, {execution.JobTimeoutSecondsKey: float64(60)}} {
+		if b := poolWaitBudgetFor(limits); b != poolWaitBudget {
+			t.Fatalf("short/no timeout %v: got %s, want the %s floor", limits, b, poolWaitBudget)
+		}
+	}
+}
