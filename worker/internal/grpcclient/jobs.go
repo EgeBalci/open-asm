@@ -50,14 +50,18 @@ func (c *Client) NextJob(ctx context.Context) (*jobsRegistry.Job, error) {
 // times. Returns an empty slice (never nil-with-error) when nothing is
 // claimable, so callers can treat "empty" as "no work" exactly like NextJob
 // returns nil.
-func (c *Client) NextJobs(ctx context.Context, limit int) ([]*jobsRegistry.Job, error) {
+//
+// excludeTools names connector tools this worker cannot start right now; Core
+// leaves their jobs for other workers.
+func (c *Client) NextJobs(ctx context.Context, limit int, excludeTools []string) ([]*jobsRegistry.Job, error) {
 	if limit < 1 {
 		return nil, nil
 	}
 
 	resp, err := c.jobs.NextBatch(ctx, &jobsRegistry.NextBatchRequest{
-		Id:    c.WorkerID(),
-		Limit: int32(limit),
+		Id:           c.WorkerID(),
+		Limit:        int32(limit),
+		ExcludeTools: excludeTools,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch next jobs: %w", err)

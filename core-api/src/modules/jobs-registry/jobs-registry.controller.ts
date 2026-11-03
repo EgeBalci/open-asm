@@ -461,10 +461,12 @@ export class JobsRegistryController {
   async nextBatch(request: {
     id: string;
     limit: number;
+    excludeTools?: string[];
   }): Promise<{ values: Record<string, unknown>[] }> {
     const jobs = await this.jobsRegistryService.getNextJobs(
       request.id,
       Number(request.limit) || 1,
+      request.excludeTools ?? [],
     );
 
     const values = await Promise.all(

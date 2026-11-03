@@ -738,6 +738,7 @@ export class JobsRegistryService {
   public async getNextJobs(
     workerId: string,
     limit: number,
+    excludeTools: string[] = [],
   ): Promise<GetNextJobResult[]> {
     // A worker controls how many slots it asks to fill, but never how much of
     // the queue one claim may drain.
@@ -824,6 +825,14 @@ export class JobsRegistryService {
         }
       } else {
         queryBuilder.andWhere('tool.id = :toolId', { toolId: worker.tool.id });
+      }
+
+      // Tools whose container pool is full on this worker: leave their jobs
+      // PENDING for other workers instead of claiming them to queue locally.
+      if (excludeTools.length > 0) {
+        queryBuilder.andWhere('tool.name NOT IN (:...excludeTools)', {
+          excludeTools,
+        });
       }
 
       if (worker.internalNetworkId) {

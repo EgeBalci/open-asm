@@ -236,3 +236,55 @@ func TestPoolFreedSlotsCountsOnlyFreedBusySlots(t *testing.T) {
 		t.Fatalf("after idle evict: image=%d node=%d, want 1/2", img, node)
 	}
 }
+
+// CanStart is the poller's "may I claim this tool" check: an idle container,
+// or room under the per-image cap and the node budget. It reserves nothing.
+func TestPoolCanStart(t *testing.T) {
+	const gib = 1 << 30
+	p := NewPoolManager(ConnectorIdleTimeout, 1, 1)
+	p.SetResourceBudget(1600, 6*gib)
+
+	if !p.CanStart("nuclei", 500, 4*gib) {
+		t.Fatal("empty pool must admit nuclei")
+	}
+	if !p.ReserveReplica("t1", "nuclei", 500, 4*gib) {
+		t.Fatal("reserve nuclei")
+	}
+	if p.CanStart("NUCLEI", 500, 4*gib) {
+		t.Fatal("per-image cap reached: nuclei must not be claimable")
+	}
+	if p.CanStart("trivy", 1000, 2*gib+1) {
+		t.Fatal("node memory budget exhausted: trivy must not be claimable")
+	}
+	if !p.CanStart("nmap", 500, gib/2) {
+		t.Fatal("nmap still fits the budget")
+	}
+	if !p.CanStart("nmap", 500, gib/2) {
+		t.Fatal("CanStart must not reserve")
+	}
+
+	p.ReleaseReplica("t1")
+	p.Add(idleEntry("c1", "nuclei", time.Unix(1_000, 0)))
+	if !p.CanStart("nuclei", 500, 4*gib) {
+		t.Fatal("an idle nuclei container is reusable")
+	}
+}
+
+func TestPoolFreedSignal(t *testing.T) {
+	p, now := newPoolForTest(t, time.Unix(1_000, 0))
+	p.Add(idleEntry("c1", "nuclei", now))
+	if _, ok := p.Acquire("exec-1", "nuclei"); !ok {
+		t.Fatal("acquire c1")
+	}
+	select {
+	case <-p.Freed():
+		t.Fatal("no slot freed yet")
+	default:
+	}
+	p.ReleaseToIdle("exec-1")
+	select {
+	case <-p.Freed():
+	default:
+		t.Fatal("a freed slot must signal")
+	}
+}

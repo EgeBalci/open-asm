@@ -2584,6 +2584,21 @@ describe('JobsRegistryService', () => {
       );
     });
 
+    it('leaves the tools a worker cannot start unclaimed', async () => {
+      const { qb } = givenWorkerAndQueue(buildWorker(), []);
+
+      await service.getNextJobs('worker-uuid', 2, ['nuclei']);
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'tool.name NOT IN (:...excludeTools)',
+        { excludeTools: ['nuclei'] },
+      );
+
+      qb.andWhere.mockClear();
+      await service.getNextJobs('worker-uuid', 2);
+      const predicates = qb.andWhere.mock.calls.map((call) => String(call[0]));
+      expect(predicates.some((sql) => sql.includes('excludeTools'))).toBe(false);
+    });
+
     it('getNextJob delegates to the batched claim', async () => {
       // Given: one claimable job
       const { qb } = givenWorkerAndQueue(buildWorker(), [

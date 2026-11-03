@@ -158,6 +158,10 @@ func Start(ctx context.Context, cfg *config.Config, events chan<- TuiEvent) {
 
 	pollLoop := func(pollerCtx, sessionCtx context.Context) {
 		policy := newPollPolicy()
+		var slotFreed <-chan struct{}
+		if mgr != nil {
+			slotFreed = mgr.SlotFreed()
+		}
 		// nudged is set while a hint-armed short claim is pending, so a burst
 		// of hints cannot keep pushing that claim back.
 		nudged := false
@@ -217,7 +221,13 @@ func Start(ctx context.Context, cfg *config.Config, events chan<- TuiEvent) {
 				return 0
 			}
 
-			jobs, err := grpcClient.NextJobs(sessionCtx, reserved)
+			// Tools whose container pool is full stay on Core for other
+			// workers instead of being claimed only to wait here.
+			var exclude []string
+			if mgr != nil {
+				exclude = claimedConnectors.saturated(mgr)
+			}
+			jobs, err := grpcClient.NextJobs(sessionCtx, reserved, exclude)
 			if err != nil {
 				NewTuiLogger(events, "Jobs").ErrorE("Failed to pull jobs", err)
 				releaseSlots(reserved)
@@ -284,6 +294,13 @@ func Start(ctx context.Context, cfg *config.Config, events chan<- TuiEvent) {
 			case <-grpcClient.JobsAvailable():
 				// While flowing the poller already refills quickly; idle, claim
 				// now instead of waiting out the long backoff.
+				if !nudged && !policy.flowing() {
+					nudged = true
+					resetTimer(pollRefillDelay)
+				}
+			case <-slotFreed:
+				// A container slot freed: tools excluded from the last claim
+				// may be startable again, so claim now rather than idling.
 				if !nudged && !policy.flowing() {
 					nudged = true
 					resetTimer(pollRefillDelay)
