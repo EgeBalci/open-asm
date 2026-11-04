@@ -17,7 +17,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { JobHistory } from './entities/job-history.entity';
 import type { Job } from './entities/job.entity';
-import { WorkflowRunnerService } from './workflow-runner.service';
+import { Semaphore, WorkflowRunnerService } from './workflow-runner.service';
 
 function tool(name: string, ...categories: ToolCategory[]): Tool {
   return {
@@ -221,6 +221,41 @@ describe('WorkflowRunnerService', () => {
 
     service = module.get(WorkflowRunnerService);
   }
+
+  describe('advance concurrency', () => {
+    it('never holds more than three advance transactions at once', async () => {
+      const steps = [{ name: 'Port Scan', run: 'naabu' }];
+      await setup(createFakeDb({ workflow: workflow(steps) }));
+      getToolByNames.mockResolvedValue([tool('naabu', ToolCategory.PORTS_SCANNER)]);
+      // Dispatches stall while their advance holds its lock, the way a pooled
+      // createNewJob waits for a connection under load.
+      let unblock!: () => void;
+      const blocked = new Promise<void>((resolve) => (unblock = resolve));
+      createNewJob.mockImplementation(async () => {
+        await blocked;
+        return [{ id: 'job-1' }];
+      });
+      const qr = db.dataSource.createQueryRunner() as {
+        startTransaction: jest.Mock;
+        release: jest.Mock;
+      };
+      const open = () =>
+        qr.startTransaction.mock.calls.length - qr.release.mock.calls.length;
+
+      const advances = Array.from({ length: 20 }, () =>
+        service.advanceRun('history-1'),
+      );
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+
+      expect(createNewJob).toHaveBeenCalledTimes(3);
+      expect(open()).toBe(3);
+
+      unblock();
+      await Promise.all(advances);
+      expect(open()).toBe(0);
+      expect(qr.startTransaction).toHaveBeenCalledTimes(20);
+    });
+  });
 
   describe('startRun', () => {
     it('creates one run and dispatches every root in parallel', async () => {
@@ -792,5 +827,39 @@ describe('WorkflowRunnerService', () => {
       });
       expect(db.history.isCompleted).toBe(true);
     });
+  });
+});
+
+describe('Semaphore', () => {
+  it('caps concurrency, keeps FIFO order and frees a slot when a task throws', async () => {
+    const sem = new Semaphore(2);
+    const order: number[] = [];
+    let active = 0;
+    let peak = 0;
+    const task = (n: number, fail = false) =>
+      sem.run(async () => {
+        peak = Math.max(peak, ++active);
+        await Promise.resolve();
+        active--;
+        order.push(n);
+        if (fail) throw new Error(`task ${n}`);
+        return n;
+      });
+
+    const results = await Promise.allSettled([
+      task(1, true),
+      task(2),
+      task(3),
+      task(4),
+    ]);
+
+    expect(peak).toBe(2);
+    expect(order).toEqual([1, 2, 3, 4]);
+    expect(results.map((r) => r.status)).toEqual([
+      'rejected',
+      'fulfilled',
+      'fulfilled',
+      'fulfilled',
+    ]);
   });
 });

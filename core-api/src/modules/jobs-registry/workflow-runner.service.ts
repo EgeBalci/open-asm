@@ -50,6 +50,36 @@ interface RunGraph {
 }
 
 /**
+ * An advance holds a pooled connection (the run row lock) while createNewJob
+ * takes more from the same pool (10 by default, waiting forever when empty).
+ * Unbounded, a burst of runs such as a bulk target import holds every
+ * connection, waits on itself forever and stalls every endpoint that needs the
+ * database. At up to two connections each, three advances leave the API room.
+ */
+const MAX_CONCURRENT_ADVANCES = 3;
+
+/** Runs at most `max` tasks at once; the rest wait in FIFO order. */
+export class Semaphore {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly max: number) {}
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.active < this.max) this.active++;
+    else await new Promise<void>((resolve) => this.waiting.push(resolve));
+    try {
+      return await task();
+    } finally {
+      // Hand the slot straight to the next waiter, or free it.
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active--;
+    }
+  }
+}
+
+/**
  * Drives a workflow run: dispatches steps whose `needs` are satisfied and keeps
  * the run's step state (`job_histories.steps`) in sync.
  *
@@ -61,6 +91,7 @@ interface RunGraph {
 @Injectable()
 export class WorkflowRunnerService {
   private readonly logger = new Logger(WorkflowRunnerService.name);
+  private readonly advanceSlots = new Semaphore(MAX_CONCURRENT_ADVANCES);
 
   constructor(
     private readonly dataSource: DataSource,
@@ -147,7 +178,14 @@ export class WorkflowRunnerService {
     await this.advance(jobHistoryId);
   }
 
-  private async advance(
+  private advance(
+    jobHistoryId: string,
+    prebuilt?: RunGraph,
+  ): Promise<{ dispatched: number; completed: boolean }> {
+    return this.advanceSlots.run(() => this.advanceNow(jobHistoryId, prebuilt));
+  }
+
+  private async advanceNow(
     jobHistoryId: string,
     prebuilt?: RunGraph,
   ): Promise<{ dispatched: number; completed: boolean }> {
