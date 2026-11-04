@@ -252,7 +252,8 @@ func processJob(ctx context.Context, job *pb.Job, grpcClient *grpcclient.Client,
 	NewTuiLogger(events, "Jobs").Info("[%s] Executing: %s (category: %s)", job.Id, cmdStr, category)
 
 	if after, ok := strings.CutPrefix(cmdStr, "screenshot "); ok {
-		url := strings.TrimSpace(after)
+		// "screenshot <url> [proxy]": core adds a proxy for onion services.
+		url, proxy, _ := strings.Cut(strings.TrimSpace(after), " ")
 
 		browser, err := getBrowser()
 		if err != nil {
@@ -273,7 +274,7 @@ func processJob(ctx context.Context, job *pb.Job, grpcClient *grpcclient.Client,
 			submitCategoryError(ctx, grpcClient, events, job.Id, category, fmt.Sprintf("Screenshot error (browser init): %v", err))
 			return true, false
 		}
-		base64Image, err := TakeScreenshotBase64(ctx, browser, url)
+		base64Image, err := TakeScreenshotBase64(ctx, browser, url, strings.TrimSpace(proxy))
 		if err != nil {
 			// A page that will not render is the TARGET's condition, not the
 			// tool's failure, so this must not fail the job. Report an empty

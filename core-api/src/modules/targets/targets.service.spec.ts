@@ -496,6 +496,16 @@ describe('TargetsService', () => {
       );
     });
 
+    it('should throw BadRequestException for a malformed onion address', async () => {
+      const dto = {
+        targets: [{ value: 'expyuzz4wqqyqhjn.onion', type: TargetType.DOMAIN }],
+      };
+
+      await expect(
+        service.createMultipleTargets(dto, workspaceId, userContext),
+      ).rejects.toThrow('must be a v3 onion address');
+    });
+
     it('should throw BadRequestException for CIDR with invalid prefix', async () => {
       // Arrange
       const dto = {

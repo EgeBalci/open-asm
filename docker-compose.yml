@@ -235,8 +235,9 @@ services:
     image: oasm/oasm-tor:latest
     build:
       context: ./docker/tor
-    # SOCKS5 proxy for connectors: socks5://oasm-tor:9050 in a profile's
-    # custom args. Only on the connectors network, never published on the host.
+    # SOCKS5 proxy: core-api routes every .onion target's jobs through it
+    # (TOR_SOCKS_ADDR), and profiles may use socks5://oasm-tor:9050 in custom
+    # args. Only on the connectors network, never published on the host.
     networks:
       - oasm-connectors
     volumes:
