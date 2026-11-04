@@ -1,4 +1,4 @@
-import { CUSTOM_ARGS_KEY, parseCustomArgs, shellQuoteArgs } from '../tools/custom-args';
+import { CUSTOM_ARGS_KEY, parseCustomArgs } from '../tools/custom-args';
 
 /**
  * Built-in command templates for an onion asset ({{proxy}} = Tor SOCKS
@@ -20,19 +20,27 @@ export const ONION_COMMANDS: Record<string, string> = {
 
 type Config = Record<string, unknown>;
 
-/** Strips any proxy flag from customArgs and appends `-proxy <url>`. */
+const PROXY_FLAGS = new Set(['-proxy', '--proxy', '-p']);
+
+/**
+ * Strips any proxy flag from customArgs and appends `-proxy <url>`. Resolved
+ * connector configs carry customArgs pre-split into argv tokens (what the SDK's
+ * connector.CustomArgs decodes); a raw profile string is split the same way.
+ */
 function withProxyArg(config: Config, url: string): Config {
   const raw = config[CUSTOM_ARGS_KEY];
-  const tokens = typeof raw === 'string' ? parseCustomArgs(raw) : [];
+  const tokens = Array.isArray(raw)
+    ? raw.map(String)
+    : typeof raw === 'string'
+      ? parseCustomArgs(raw)
+      : [];
   const kept: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] === '-proxy' || tokens[i] === '-p') i++;
-    else if (!tokens[i].startsWith('-proxy=')) kept.push(tokens[i]);
+    const [name, ...value] = tokens[i].split('=');
+    if (!PROXY_FLAGS.has(name)) kept.push(tokens[i]);
+    else if (value.length === 0) i++; // its value is the next token
   }
-  return {
-    ...config,
-    [CUSTOM_ARGS_KEY]: shellQuoteArgs([...kept, '-proxy', url]),
-  };
+  return { ...config, [CUSTOM_ARGS_KEY]: [...kept, '-proxy', url] };
 }
 
 // Go clients resolve names through a socks5:// proxy; libcurl and Python

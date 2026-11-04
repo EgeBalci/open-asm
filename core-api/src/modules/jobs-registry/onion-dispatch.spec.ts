@@ -14,20 +14,24 @@ describe('onionConnectorConfig', () => {
     ).toEqual({ proxy: 'socks5h://oasm-tor:9050' });
   });
 
-  it('replaces any nuclei proxy flag in customArgs with Tor', () => {
+  it('replaces any nuclei proxy flag in customArgs with Tor, as argv tokens', () => {
+    const tor = ['-proxy', 'socks5://oasm-tor:9050'];
+    // Resolved configs carry customArgs already tokenized (resolveConfigForJob).
     expect(
       onionConnectorConfig(
         'nuclei',
-        { customArgs: `-tags cve -p http://192.0.2.1:8080 -proxy=x -proxy y`, severity: ['high'] },
+        {
+          customArgs: ['-x', '1', '-p', 'http://192.0.2.1:8080', '--proxy=a', '-proxy', 'b'],
+          severity: ['high'],
+        },
         TOR,
       ),
-    ).toEqual({
-      customArgs: `'-tags' 'cve' '-proxy' 'socks5://oasm-tor:9050'`,
-      severity: ['high'],
-    });
-    expect(onionConnectorConfig('nuclei', null, TOR)).toEqual({
-      customArgs: `'-proxy' 'socks5://oasm-tor:9050'`,
-    });
+    ).toEqual({ customArgs: ['-x', '1', ...tor], severity: ['high'] });
+    // A raw profile string is split the same way.
+    expect(
+      onionConnectorConfig('nuclei', { customArgs: `-proxy "http://192.0.2.1:1"` }, TOR),
+    ).toEqual({ customArgs: tor });
+    expect(onionConnectorConfig('nuclei', null, TOR)).toEqual({ customArgs: tor });
   });
 
   it('skips connectors with no Tor-safe mode', () => {
