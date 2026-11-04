@@ -87,17 +87,36 @@ func emptyScreenshotPayload(rawURL string) (string, error) {
 	return string(payload), nil
 }
 
-func TakeScreenshotBase64(ctx context.Context, browser *rod.Browser, rawURL string) (string, error) {
+// TakeScreenshotBase64 renders rawURL. A non-empty proxy (an onion service's
+// Tor SOCKS proxy) gets the page its own browser context routed through it,
+// with page scripts off so nothing (WebRTC, for one) can bypass the proxy.
+func TakeScreenshotBase64(ctx context.Context, browser *rod.Browser, rawURL, proxy string) (string, error) {
 	url := formatURL(rawURL)
 	if screenshotLog != nil {
 		screenshotLog.Verbose("Preparing browser for: %s", url)
 	}
 
-	page, err := stealth.Page(browser.Context(ctx))
+	b := browser.Context(ctx)
+	if proxy != "" {
+		res, err := proto.TargetCreateBrowserContext{ProxyServer: proxy}.Call(b)
+		if err != nil {
+			return "", fmt.Errorf("failed to create proxied browser context: %w", err)
+		}
+		defer func() { _ = proto.TargetDisposeBrowserContext{BrowserContextID: res.BrowserContextID}.Call(browser) }()
+		b.BrowserContextID = res.BrowserContextID
+	}
+
+	page, err := stealth.Page(b)
 	if err != nil {
 		return "", fmt.Errorf("failed to create stealth page: %w", err)
 	}
 	defer func() { _ = page.Close() }()
+
+	if proxy != "" {
+		if err := (proto.EmulationSetScriptExecutionDisabled{Value: true}).Call(page); err != nil {
+			return "", fmt.Errorf("failed to disable scripts: %w", err)
+		}
+	}
 
 	_ = page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
 		Width:             1920,
@@ -128,12 +147,15 @@ func TakeScreenshotBase64(ctx context.Context, browser *rod.Browser, rawURL stri
 		return "", fmt.Errorf("failed to load page %s: %w", url, err)
 	}
 
-	// Wait for web fonts to finish loading (best-effort, 5s timeout)
-	// Without this, @font-face fonts may not be rendered in the screenshot.
-	_, _ = page.Timeout(5 * time.Second).Eval(`document.fonts.ready`)
+	// Both waits evaluate JS, which hangs while page scripts are disabled.
+	if proxy == "" {
+		// Wait for web fonts to finish loading (best-effort, 5s timeout)
+		// Without this, @font-face fonts may not be rendered in the screenshot.
+		_, _ = page.Timeout(5 * time.Second).Eval(`document.fonts.ready`)
 
-	// Wait for next render frame to ensure CSS/font changes are painted
-	_ = page.WaitRepaint()
+		// Wait for next render frame to ensure CSS/font changes are painted
+		_ = page.WaitRepaint()
+	}
 
 	quality := 80
 	imgBytes, err := page.Timeout(10*time.Second).Screenshot(true, &proto.PageCaptureScreenshot{

@@ -16,6 +16,7 @@ import {
   WorkerType,
 } from '@/common/enums/enum';
 import bindingCommand from '@/utils/bindingCommand';
+import { isOnionHost, torSocksAddr } from '@/utils/onion';
 import {
   CUSTOM_ARGS_KEY,
   parseCustomArgs,
@@ -55,6 +56,7 @@ import {
 import { resolveToolCategory } from '../tools/tool-categories';
 import { resolveToolTargetTypes } from '../tools/tool-target-types';
 import { builtInTools } from '../tools/tools-provider/built-in-tools';
+import { ONION_COMMANDS, onionConnectorConfig } from './onion-dispatch';
 import { ToolsService } from '../tools/tools.service';
 import {
   normalizeNeeds,
@@ -430,6 +432,32 @@ export class JobsRegistryService {
     const jobRepo = this.dataSource.getRepository(Job);
     const jobsToInsert: Job[] = [];
 
+    // An onion asset only ever leaves through Tor: its own command or a
+    // proxied connector config, or no job at all (null).
+    const tor = torSocksAddr();
+    const payloadFor = (
+      assetValue: string,
+      vars: Record<string, string>,
+    ): { command?: string; config: Record<string, unknown> | null } | null => {
+      const connectorConfig = mergedConfig ?? config ?? null;
+      if (!isOnionHost(assetValue)) {
+        return isConnector
+          ? { config: connectorConfig }
+          : { command: bindingCommand(defaultCommand, vars), config: null };
+      }
+      // Subdomain enumeration hands the name to passive sources and DNS, and
+      // an onion service has no subdomains to find: never, whatever the tool.
+      if (jobCategory === ToolCategory.SUBDOMAINS) return null;
+      if (isConnector) {
+        const onionConfig = onionConnectorConfig(tool.name, connectorConfig, tor);
+        return onionConfig && { config: onionConfig };
+      }
+      const template = ONION_COMMANDS[tool.name];
+      return template
+        ? { command: bindingCommand(template, { ...vars, proxy: tor }), config: null }
+        : null;
+    };
+
     // A tool only ever receives assets of the target types it declares, so a
     // host scanner never sees a repository (and vice versa) — whether the run
     // came from a trigger, a schedule, an asset group or a manual dispatch.
@@ -465,6 +493,12 @@ export class JobsRegistryService {
 
       // Create jobs for each asset service
       for (const assetService of assetServices) {
+        const payload = payloadFor(assetService.value, {
+          value: assetService.value,
+          port: assetService.port.toString(),
+          args: builtInArgs,
+        });
+        if (!payload) continue;
         const job = jobRepo.create({
           id: randomUUID(),
           asset: assetService.asset, // Use the associated asset from asset service
@@ -475,16 +509,9 @@ export class JobsRegistryService {
           tool,
           priority: priority ?? 4,
           jobHistory,
-          command: isConnector
-            ? undefined
-            : bindingCommand(defaultCommand, {
-                // Use the default command template for HTTP_PROBE
-                value: assetService.value,
-                port: assetService.port.toString(),
-                args: builtInArgs,
-              }),
+          command: payload.command,
           configProfileId: isConnector ? configProfileId : undefined,
-          config: isConnector ? mergedConfig ?? config ?? null : null,
+          config: payload.config,
           isSaveRawResult: isSaveRawResult ?? false,
           isPublishEvent,
         } as DeepPartial<Job>);
@@ -505,6 +532,11 @@ export class JobsRegistryService {
       // Step 3: iterate tools and create jobs
 
       for (const asset of filteredAssets) {
+        const payload = payloadFor(asset.value, {
+          value: asset.value,
+          args: builtInArgs,
+        });
+        if (!payload) continue;
         const job = jobRepo.create({
           id: randomUUID(),
           asset,
@@ -514,14 +546,9 @@ export class JobsRegistryService {
           tool,
           priority: priority ?? 4,
           jobHistory,
-          command: isConnector
-            ? undefined
-            : bindingCommand(defaultCommand, {
-                value: asset.value,
-                args: builtInArgs,
-              }),
+          command: payload.command,
           configProfileId: isConnector ? configProfileId : undefined,
-          config: isConnector ? mergedConfig ?? config ?? null : null,
+          config: payload.config,
           isSaveRawResult: isSaveRawResult ?? false,
           isPublishEvent,
         } as DeepPartial<Job>);

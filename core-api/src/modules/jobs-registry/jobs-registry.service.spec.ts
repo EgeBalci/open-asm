@@ -2051,6 +2051,28 @@ describe('JobsRegistryService', () => {
       ).toEqual(['as-1', 'as-2']);
     });
 
+    it('probes and screenshots an onion service through Tor', async () => {
+      const onion = `${'a'.repeat(52)}2345.onion:80`;
+      mockAssetServiceQB.getMany.mockResolvedValue([
+        { ...makeService('as-1'), value: onion },
+      ]);
+
+      const [probe] = await service.createNewJob({
+        tool: httpProbeTool,
+        targetIds: ['target-1'],
+        workspaceId: 'ws-1',
+      });
+      expect(probe.command).toContain(`-u ${onion} -proxy socks5://oasm-tor:9050 `);
+      expect(probe.command).not.toContain('-tls-grab');
+
+      const [shot] = await service.createNewJob({
+        tool: screenshotTool,
+        targetIds: ['target-1'],
+        workspaceId: 'ws-1',
+      });
+      expect(shot.command).toBe(`screenshot ${onion} socks5://oasm-tor:9050`);
+    });
+
     it('HTTP_PROBE regression: no live filter applied; every service still produces a job', async () => {
       const allServices = [
         makeService('as-1'),
@@ -2370,6 +2392,42 @@ describe('JobsRegistryService', () => {
         workspaceId: 'ws-1',
       });
       expect(plain.command).toBe('naabu -host one.example.com -silent ');
+    });
+
+    it('routes an onion asset through Tor and skips tools that cannot be', async () => {
+      const onion = `${'a'.repeat(52)}2345.onion`;
+      mockAssetQB.getMany.mockResolvedValue([
+        { id: 'a-1', value: onion, isPrimary: true },
+        { id: 'a-2', value: 'one.example.com', isPrimary: true },
+      ]);
+
+      const jobs = await service.createNewJob({
+        tool: portsScannerTool,
+        assetIds: ['a-1', 'a-2'],
+        workspaceId: 'ws-1',
+      });
+      expect(jobs[0].command).toContain(`-x socks5h://oasm-tor:9050 http://${onion}:$p/`);
+      expect(jobs[0].command).not.toContain('naabu');
+      expect(jobs[1].command).toBe('naabu -host one.example.com -silent ');
+
+      // subfinder has no Tor-safe command: the onion asset gets no job.
+      const skipped = await service.createNewJob({
+        tool: { ...portsScannerTool, name: 'subfinder' },
+        assetIds: ['a-1', 'a-2'],
+        workspaceId: 'ws-1',
+      });
+      expect(skipped.map((job) => job.asset.id)).toEqual(['a-2']);
+
+      // Any subdomain enumeration skips onion assets, whatever the tool.
+      const enumerated = await service.createNewJob({
+        tool: {
+          ...portsScannerTool,
+          categories: [{ name: ToolCategory.SUBDOMAINS, targetTypes: HOST }],
+        },
+        assetIds: ['a-1', 'a-2'],
+        workspaceId: 'ws-1',
+      });
+      expect(enumerated.map((job) => job.asset.id)).toEqual(['a-2']);
     });
 
     describe('category selection', () => {

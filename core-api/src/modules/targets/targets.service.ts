@@ -9,6 +9,7 @@ import {
 } from '@/common/enums/enum';
 import { UserContextPayload } from '@/common/interfaces/app.interface';
 import { getManyResponse } from '@/utils/getManyResponse';
+import { isOnionHost, ONION_V3_REGEX } from '@/utils/onion';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
@@ -139,6 +140,11 @@ export class TargetsService implements OnModuleInit {
       if (!domainRegex.test(value)) {
         throw new BadRequestException(
           `Invalid domain: "${value}" is not a valid root domain.`,
+        );
+      }
+      if (isOnionHost(value) && !ONION_V3_REGEX.test(value)) {
+        throw new BadRequestException(
+          `Invalid onion address: "${value}" must be a v3 onion address (56 base32 characters followed by .onion).`,
         );
       }
     } else if (type === TargetType.CIDR) {

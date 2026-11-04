@@ -1,8 +1,13 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -54,5 +59,45 @@ func TestTrimRodStackPassesThroughASingleLineError(t *testing.T) {
 	const msg = "timeout loading page http://example.com"
 	if got := trimRodStack(msg); got != msg {
 		t.Fatalf("trimRodStack(%q) = %q, want it unchanged", msg, got)
+	}
+}
+
+// An onion screenshot must reach the page only through the given proxy, with
+// page scripts off (a script could reach out around the proxy).
+func TestTakeScreenshotWithProxyRoutesThroughItWithoutScripts(t *testing.T) {
+	b, l, err := launchBrowser(NewTuiLogger(nil, "test"))
+	if err != nil {
+		t.Skipf("chromium unavailable: %v", err)
+	}
+	defer func() { _ = b.Close(); l.Kill(); l.Cleanup() }()
+
+	onion := strings.Repeat("a", 52) + "2345.onion"
+	var mu sync.Mutex
+	var seen []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Host+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>hi<script>fetch("/js-ran")</script></body></html>`))
+	}))
+	defer proxy.Close()
+
+	img, err := TakeScreenshotBase64(context.Background(), b, onion+":80", proxy.URL)
+	if err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+	if img == "" {
+		t.Fatal("empty screenshot")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(seen, onion+":80/") && !slices.Contains(seen, onion+"/") {
+		t.Fatalf("page did not load through the proxy: %v", seen)
+	}
+	for _, s := range seen {
+		if strings.HasSuffix(s, "/js-ran") {
+			t.Fatalf("page script ran: %v", seen)
+		}
 	}
 }
